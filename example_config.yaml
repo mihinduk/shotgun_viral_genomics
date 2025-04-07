@@ -1,0 +1,43 @@
+# Example configuration file for Shotgun Viral Genomics Pipeline
+
+# Input settings
+input:
+  # Patterns for input files - supports both naming conventions
+  r1_pattern: "*_R1*.fastq.gz"  # Will match both *_R1.fastq.gz and *_R1_001.fastq.gz
+  r2_pattern: "*_R2*.fastq.gz"  # Will match both *_R2.fastq.gz and *_R2_001.fastq.gz
+
+# Reference genome settings
+reference:
+  # Genome accession number (from NCBI)
+  accession: "NC_045512.2"
+  # Whether to download if not present
+  download: true
+  # Force download even if file exists
+  force_download: false
+
+# Output settings
+output:
+  # Base output directory
+  directory: "./results"
+  # Minimum read depth for reporting variants
+  min_depth: 200
+
+# Processing settings
+processing:
+  # Number of CPU threads to use
+  threads: 12
+  # Steps to skip (if any)
+  skip_qc: false
+  skip_stats: false
+  skip_mapping: false
+  skip_variants: false
+  skip_annotation: false
+  # Keep temporary files
+  keep_tmp: false
+
+# SnpEff settings
+snpeff:
+  # Path to snpEff.jar
+  jar_path: "snpEff.jar"
+  # Add genome to snpEff if not present
+  add_genome: true

@@ -169,7 +169,7 @@ def check_snpeff_database(accession: str, snpeff_jar: str) -> bool:
     """
     logger.info(f"Checking if {accession} is in snpEff database")
     
-    cmd = f"java -jar {snpeff_jar} databases | grep {accession}"
+    cmd = f"/usr/lib/jvm/java-11-openjdk-11.0.20.0.8-1.el7_9.x86_64/bin//usr/lib/jvm/java-11-openjdk-11.0.20.0.8-1.el7_9.x86_64/bin/java -jar {snpeff_jar} databases | grep {accession}"
     result = run_command(cmd, shell=True, check=False)
     
     return result.returncode == 0
@@ -189,7 +189,7 @@ def add_genome_to_snpeff(accession: str, fasta_path: str, snpeff_jar: str) -> bo
     logger.info(f"Adding genome {accession} to snpEff database")
     
     # Run snpEff build command
-    cmd = f"java -jar {snpeff_jar} build -genbank -v -noCheckProtein {accession}"
+    cmd = f"/usr/lib/jvm/java-11-openjdk-11.0.20.0.8-1.el7_9.x86_64/bin//usr/lib/jvm/java-11-openjdk-11.0.20.0.8-1.el7_9.x86_64/bin/java -jar {snpeff_jar} build -genbank -v -noCheckProtein {accession}"
     result = run_command(cmd, shell=True, check=False)
     
     # Check if build was successful
@@ -526,7 +526,7 @@ def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str) -> Dic
         logger.info(f"Annotating variants for {sample_name}")
         
         # Run snpEff
-        cmd = f"java -jar -Xmx4g {snpeff_jar} {accession} {filt_path} -s {summary_html} > {ann_vcf}"
+        cmd = f"/usr/lib/jvm/java-11-openjdk-11.0.20.0.8-1.el7_9.x86_64/bin/java -jar -Xmx4g {snpeff_jar} {accession} {filt_path} -s {summary_html} > {ann_vcf}"
         run_command(cmd, shell=True)
         
         # Process the VCF file into TSV format

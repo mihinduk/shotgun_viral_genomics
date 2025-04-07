@@ -237,7 +237,7 @@ def clean_reads(output_dir: str, threads: int = 1) -> Dict[str, Dict[str, str]]:
     os.makedirs(output_dir, exist_ok=True)
     
     # Get R1 fastq files - support both naming conventions
-    r1_files = [f for f in os.listdir('.') if re.match(r'.*_R1(?:_001)?\.fastq\.gz$', f)$', f)]
+    r1_files = [f for f in os.listdir('.') if re.match(r'.*_R1(?:_001)?\.fastq\.gz$', f)]
     
     if not r1_files:
         raise FileNotFoundError("No R1 FASTQ files found in the current directory")
@@ -284,7 +284,7 @@ def clean_reads(output_dir: str, threads: int = 1) -> Dict[str, Dict[str, str]]:
         qc_info = []
         qc_info.append(f"{sample_name}")
         
-        output_lines = result.stderr.split('\\n')
+        output_lines = result.stderr.split('\n')
         capture = False
         for line in output_lines:
             if "Filtering result:" in line:
@@ -297,7 +297,7 @@ def clean_reads(output_dir: str, threads: int = 1) -> Dict[str, Dict[str, str]]:
                 break
         
         with open(qc_report, 'w') as f:
-            f.write('\\n'.join(qc_info))
+            f.write('\n'.join(qc_info))
         
         # Add files to result dictionary
         cleaned_files[sample_name] = {

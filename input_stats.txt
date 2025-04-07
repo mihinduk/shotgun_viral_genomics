@@ -1,0 +1,2 @@
+file	format	type	num_seqs	sum_len	min_len	avg_len	max_len
+../NovaSeq_N917_I13859_Cell_Culture_RNA_Diamond_Scheaffer_RRV_tg_Ross_River_virus_strain_T48_R1.fastq.gz	FASTQ	DNA	2374730	358584230	151	151.0	151

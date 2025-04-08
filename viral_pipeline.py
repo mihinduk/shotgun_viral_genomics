@@ -432,6 +432,12 @@ def map_and_call_variants(
         
         # 9. Call variants with LoFreq
         logger.info(f"Calling variants for {sample_name}")
+        # Check if output file exists and remove it
+        if os.path.exists(vars_file):
+           logger.info(f"Removing existing variant file: {vars_file}")
+           os.remove(vars_file)
+            
+        # Call variants with LoFreq
         run_command(
             f"lofreq call-parallel --pp-threads {threads} --force-overwrite --no-default-filter --call-indels -f {reference} -o {vars_file} {final_bam}",
             shell=True
@@ -481,7 +487,12 @@ def filter_variants(variants_dir: str) -> Dict[str, str]:
         filtered_path = os.path.join(variants_dir, f"{sample_name}_vars.filt.vcf")
         
         logger.info(f"Filtering variants for {sample_name}")
-        
+
+        # Check if output file exists and remove it
+       if os.path.exists(filtered_path):
+           logger.info(f"Removing existing filtered file: {filtered_path}")
+           os.remove(filtered_path)
+      
         # Run LoFreq filter
         run_command(
             f"lofreq filter -i {vcf_path} -o {filtered_path} -v 75",
@@ -528,7 +539,12 @@ def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_p
         summary_genes = os.path.join(variants_dir, f"{sample_name}_summary.genes.txt")
         
         logger.info(f"Annotating variants for {sample_name}")
-        
+
+        # Check if output files exist and remove them
+       if os.path.exists(ann_vcf):
+           logger.info(f"Removing existing annotation file: {ann_vcf}")
+           os.remove(ann_vcf)
+      
         # Run snpEff
         cmd = f"{java_path} -jar -Xmx4g {snpeff_jar} {accession} {filt_path} -s {summary_html} > {ann_vcf}"
         run_command(cmd, shell=True)

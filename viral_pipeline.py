@@ -71,6 +71,7 @@ def parse_args() -> argparse.Namespace:
     snpeff_group = parser.add_argument_group("SnpEff")
     snpeff_group.add_argument("--add-to-snpeff", action="store_true", help="Attempt to add genome to snpEff if not present")
     snpeff_group.add_argument("--snpeff-jar", default="snpEff.jar", help="Path to snpEff.jar")
+    snpeff_group.add_argument("--java-path", default="java", help="Path to Java executable")
     
     return parser.parse_args()
 
@@ -163,18 +164,19 @@ def check_snpeff_database(accession: str, snpeff_jar: str) -> bool:
     Args:
         accession: Genome accession number
         snpeff_jar: Path to snpEff.jar
+        java_path: Path to Java executable
         
     Returns:
         True if the genome is in the database, False otherwise
     """
     logger.info(f"Checking if {accession} is in snpEff database")
     
-    cmd = f"////usr/lib/jvm/java-11-openjdk-11.0.20.0.8-1.el7_9.x86_64/bin/java -jar {snpeff_jar} databases | grep {accession}"
+    cmd = f"{java_path} -jar {snpeff_jar} databases | grep {accession}"
     result = run_command(cmd, shell=True, check=False)
     
     return result.returncode == 0
 
-def add_genome_to_snpeff(accession: str, fasta_path: str, snpeff_jar: str) -> bool:
+def add_genome_to_snpeff(accession: str, fasta_path: str, snpeff_jar: str, java_path: str = "java") -> bool:
     """
     Add a genome to the snpEff database.
     
@@ -182,6 +184,7 @@ def add_genome_to_snpeff(accession: str, fasta_path: str, snpeff_jar: str) -> bo
         accession: Genome accession number
         fasta_path: Path to the genome FASTA file
         snpeff_jar: Path to snpEff.jar
+        java_path: Path to Java executable
         
     Returns:
         True if successful, False otherwise
@@ -490,7 +493,7 @@ def filter_variants(variants_dir: str) -> Dict[str, str]:
     logger.info(f"Variant filtering completed for {len(filtered_files)} samples")
     return filtered_files
 
-def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str) -> Dict[str, Dict[str, str]]:
+def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_path: str = "java") -> Dict[str, Dict[str, str]]:
     """
     Annotate filtered variants using snpEff.
     
@@ -498,6 +501,7 @@ def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str) -> Dic
         variants_dir: Directory containing filtered variant files
         accession: Reference genome accession
         snpeff_jar: Path to snpEff.jar
+        java_path: Path to Java executable
         
     Returns:
         Dictionary mapping sample names to annotation files
@@ -526,7 +530,7 @@ def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str) -> Dic
         logger.info(f"Annotating variants for {sample_name}")
         
         # Run snpEff
-        cmd = f"/////usr/lib/jvm/java-11-openjdk-11.0.20.0.8-1.el7_9.x86_64/bin/java -jar -Xmx4g {snpeff_jar} {accession} {filt_path} -s {summary_html} > {ann_vcf}"
+        cmd = f"{java_path} -jar -Xmx4g {snpeff_jar} {accession} {filt_path} -s {summary_html} > {ann_vcf}"
         run_command(cmd, shell=True)
         
         # Process the VCF file into TSV format
@@ -671,7 +675,7 @@ def main():
             accession = os.path.basename(reference_path).split('.')[0]
         
         if accession:
-            in_database = check_snpeff_database(accession, args.snpeff_jar)
+            in_database = check_snpeff_database(accession, args.snpeff_jar, args.java_path)
             if not in_database:
                 logger.warning(f"Genome {accession} not found in snpEff database")
                 if args.add_to_snpeff:
@@ -707,7 +711,7 @@ def main():
         # Step 6: Annotate variants
         if not args.skip_annotation and accession:
             variants_dir = os.path.join(cleaned_dir, "variants")
-            annotation_files = annotate_variants(variants_dir, accession, args.snpeff_jar)
+            annotation_files = annotate_variants(variants_dir, accession, args.snpeff_jar, args.java_path)
             
             # Step 7: Parse annotations
             parsed_files = parse_annotations(variants_dir, args.min_depth)

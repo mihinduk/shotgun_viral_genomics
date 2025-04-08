@@ -18,6 +18,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import List, Optional, Dict, Union, Any
+import glob  # Added for glob file pattern support
 
 __version__ = "0.1.0"
 
@@ -206,29 +207,64 @@ def add_genome_to_snpeff(accession: str, fasta_path: str, snpeff_jar: str, java_
     
     return success
 
-def calculate_read_stats(fastq_pattern: str, output_file: str, threads: int = 1) -> None:
+def calculate_read_stats(r1_pattern: str, output_file: str, threads: int = 1, r2_pattern: str = None) -> None:
     """
     Calculate read statistics using seqkit.
     
     Args:
-        fastq_pattern: Pattern to match FASTQ files
+        r1_pattern: Pattern to match R1 FASTQ files
         output_file: Output file for statistics
         threads: Number of threads to use
+        r2_pattern: Optional pattern to match R2 FASTQ files
     """
     logger.info("Calculating read statistics")
     
-    # Support both naming conventions (*_R1.fastq.gz and *_R1_001.fastq.gz)
-    cmd = f"seqkit stats {fastq_pattern} -T -j {threads} > {output_file}"
-    run_command(cmd, shell=True)
+    # Create patterns for both R1 and R2 files if needed
+    patterns = [r1_pattern]
+    if r2_pattern:
+        patterns.append(r2_pattern)
+    
+    # Combine patterns for seqkit
+    combined_pattern = " ".join(patterns)
+    
+    # Need to handle the case where the patterns might include shell special characters
+    # If there are any potential glob patterns, use shell=True to let the shell expand them
+    if any(char in combined_pattern for char in '*?[]{}'):
+        cmd = f"seqkit stats {combined_pattern} -T -j {threads} > {output_file}"
+        run_command(cmd, shell=True)
+    else:
+        # For non-glob patterns, we can use a more direct approach
+        matching_files = []
+        for pattern in patterns:
+            if '*' in pattern:
+                # Expand the glob pattern
+                matching_files.extend(glob.glob(pattern))
+            else:
+                # Add the file directly if it exists
+                if os.path.exists(pattern):
+                    matching_files.append(pattern)
+        
+        # If we found files, run seqkit on them
+        if matching_files:
+            files_str = " ".join(matching_files)
+            cmd = f"seqkit stats {files_str} -T -j {threads} > {output_file}"
+            run_command(cmd, shell=True)
+        else:
+            logger.warning(f"No FASTQ files found matching patterns: {combined_pattern}")
+            # Create an empty output file to prevent errors
+            with open(output_file, 'w') as f:
+                f.write("No matching FASTQ files found\n")
     
     logger.info(f"Read statistics saved to {output_file}")
 
-def clean_reads(output_dir: str, threads: int = 1) -> Dict[str, Dict[str, str]]:
+def clean_reads(output_dir: str, r1_pattern: str, r2_pattern: str, threads: int = 1) -> Dict[str, Dict[str, str]]:
     """
     Clean reads using fastp.
     
     Args:
         output_dir: Output directory for cleaned reads
+        r1_pattern: Pattern to match R1 FASTQ files
+        r2_pattern: Pattern to match R2 FASTQ files
         threads: Number of threads to use
         
     Returns:
@@ -239,33 +275,62 @@ def clean_reads(output_dir: str, threads: int = 1) -> Dict[str, Dict[str, str]]:
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
     
-    # Get R1 fastq files - support both naming conventions
-    r1_files = [f for f in os.listdir('.') if re.match(r'.*_R1(?:_001)?\.fastq\.gz$', f)]
+    # Get R1 fastq files based on provided pattern
+    # Handle both glob patterns and direct file paths
+    if '*' in r1_pattern:
+        # It's a glob pattern
+        r1_files = glob.glob(r1_pattern)
+    else:
+        # It might be a specific file
+        r1_files = [r1_pattern] if os.path.exists(r1_pattern) else []
+    
+    # Sort the files to ensure consistent processing
+    r1_files.sort()
     
     if not r1_files:
-        raise FileNotFoundError("No R1 FASTQ files found in the current directory")
+        raise FileNotFoundError(f"No R1 FASTQ files found matching pattern: {r1_pattern}")
+    
+    logger.info(f"Found {len(r1_files)} R1 FASTQ files")
+    for i, f in enumerate(r1_files):
+        logger.info(f"  {i+1}. {f}")
     
     cleaned_files = {}
     
     for r1_file in r1_files:
-        # Extract sample name
-        match = re.match(r'(.+)_R1(?:_001)?\.fastq\.gz$', r1_file)
+        # Extract sample name from the filename
+        r1_basename = os.path.basename(r1_file)
+        
+        # Match the sample name part before _R1 or _R1_001
+        match = re.search(r'(.+?)_R1(?:_001)?\.fastq\.gz$', r1_basename)
         if not match:
             logger.warning(f"Skipping file with unusual naming pattern: {r1_file}")
             continue
             
         sample_name = match.group(1)
         
-        # Find matching R2 file - handle both naming conventions
-        r2_file = r1_file.replace('_R1', '_R2')
+        # Find matching R2 file - handle both patterns and paths
+        r1_dir = os.path.dirname(r1_file)
+        r2_basename = r1_basename.replace('_R1', '_R2')
+        r2_file = os.path.join(r1_dir, r2_basename)
+        
+        # If exact file doesn't exist and r2_pattern contains wildcards
+        if not os.path.exists(r2_file) and '*' in r2_pattern:
+            # Try to find a matching R2 file using the glob pattern
+            r2_candidates = glob.glob(r2_pattern)
+            for candidate in r2_candidates:
+                if os.path.basename(candidate).startswith(sample_name) and '_R2' in candidate:
+                    r2_file = candidate
+                    break
         
         if not os.path.exists(r2_file):
             logger.warning(f"No matching R2 file found for {r1_file}")
             continue
         
         logger.info(f"Processing sample: {sample_name}")
+        logger.info(f"  R1: {r1_file}")
+        logger.info(f"  R2: {r2_file}")
         
-        # Output file paths - standardized naming convention regardless of input
+        # Output file paths - standardized naming convention
         r1_out = os.path.join(output_dir, f"{sample_name}_R1.qc.fastq.gz")
         r2_out = os.path.join(output_dir, f"{sample_name}_R2.qc.fastq.gz")
         html_report = os.path.join(output_dir, f"{sample_name}_fastp_report.html")
@@ -673,11 +738,47 @@ def parse_annotations(variants_dir: str, min_depth: int) -> Dict[str, str]:
         raise FileNotFoundError(f"No annotation TSV files found in {variants_dir}")
     
     parsed_files = {}
-    perl_script = "./parse_snpEff_annotated_vcf_for_collaborators.pl"
     
-    # Check if Perl script exists
-    if not os.path.exists(perl_script):
-        raise FileNotFoundError(f"Perl script not found: {perl_script}")
+    # Find the Perl script by looking in multiple locations
+    # Get the directory where this Python script is located
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Potential locations for the Perl script
+    perl_script_locations = [
+        # Current directory
+        "./parse_snpEff_annotated_vcf_for_collaborators.pl",
+        # Same directory as this Python script
+        os.path.join(script_dir, "parse_snpEff_annotated_vcf_for_collaborators.pl"),
+        # Parent directory of this Python script
+        os.path.join(os.path.dirname(script_dir), "parse_snpEff_annotated_vcf_for_collaborators.pl"),
+    ]
+    
+    perl_script = None
+    for location in perl_script_locations:
+        if os.path.exists(location):
+            perl_script = location
+            logger.info(f"Found Perl script at: {perl_script}")
+            break
+    
+    if not perl_script:
+        # If not found in the expected locations, try a system search using 'find'
+        try:
+            logger.info("Searching for Perl script using 'find' command...")
+            find_cmd = "find / -name parse_snpEff_annotated_vcf_for_collaborators.pl -type f 2>/dev/null | head -n 1"
+            result = run_command(find_cmd, shell=True, check=False)
+            if result.returncode == 0 and result.stdout.strip():
+                perl_script = result.stdout.strip()
+                logger.info(f"Found Perl script using system search: {perl_script}")
+        except Exception as e:
+            logger.warning(f"System search for Perl script failed: {str(e)}")
+    
+    # Check if Perl script was found
+    if not perl_script:
+        raise FileNotFoundError(
+            "Perl script 'parse_snpEff_annotated_vcf_for_collaborators.pl' not found. "
+            "Please make sure it's in the same directory as the viral_pipeline.py script "
+            "or specify its path manually."
+        )
     
     for ann_file in ann_files:
         # Extract sample name
@@ -748,7 +849,7 @@ def main():
                 logger.warning(f"Genome {accession} not found in snpEff database")
                 if args.add_to_snpeff:
                     logger.info(f"Attempting to add {accession} to snpEff database")
-                    success = add_genome_to_snpeff(accession, reference_path, args.snpeff_jar)
+                    success = add_genome_to_snpeff(accession, reference_path, args.snpeff_jar, args.java_path)
                     if not success:
                         logger.error(f"Failed to add {accession} to snpEff database. Annotation will likely fail.")
                 else:
@@ -757,11 +858,11 @@ def main():
         # Step 2: Calculate read statistics
         if not args.skip_stats:
             stats_file = os.path.join(output_dir, "input_stats.txt")
-            calculate_read_stats(args.r1, stats_file, args.threads)
+            calculate_read_stats(args.r1, stats_file, args.threads, args.r2)
         
         # Step 3: Clean reads
         if not args.skip_qc:
-            cleaned_files = clean_reads(cleaned_dir, args.threads)
+            cleaned_files = clean_reads(cleaned_dir, args.r1, args.r2, args.threads)
         
         # Step 4: Map reads and call variants
         if not args.skip_mapping:

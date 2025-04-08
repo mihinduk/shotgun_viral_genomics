@@ -192,7 +192,7 @@ def add_genome_to_snpeff(accession: str, fasta_path: str, snpeff_jar: str, java_
     logger.info(f"Adding genome {accession} to snpEff database")
     
     # Run snpEff build command
-    cmd = f"////usr/lib/jvm/java-11-openjdk-11.0.20.0.8-1.el7_9.x86_64/bin/java -jar {snpeff_jar} build -genbank -v -noCheckProtein {accession}"
+    cmd = f"{java_path} -jar {snpeff_jar} build -genbank -v -noCheckProtein {accession}"
     result = run_command(cmd, shell=True, check=False)
     
     # Check if build was successful
@@ -434,8 +434,8 @@ def map_and_call_variants(
         logger.info(f"Calling variants for {sample_name}")
         # Check if output file exists and remove it
         if os.path.exists(vars_file):
-           logger.info(f"Removing existing variant file: {vars_file}")
-           os.remove(vars_file)
+            logger.info(f"Removing existing variant file: {vars_file}")
+            os.remove(vars_file)
             
         # Call variants with LoFreq
         run_command(
@@ -489,9 +489,9 @@ def filter_variants(variants_dir: str) -> Dict[str, str]:
         logger.info(f"Filtering variants for {sample_name}")
 
         # Check if output file exists and remove it
-       if os.path.exists(filtered_path):
-           logger.info(f"Removing existing filtered file: {filtered_path}")
-           os.remove(filtered_path)
+        if os.path.exists(filtered_path):
+            logger.info(f"Removing existing filtered file: {filtered_path}")
+            os.remove(filtered_path)
       
         # Run LoFreq filter
         run_command(
@@ -541,10 +541,20 @@ def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_p
         logger.info(f"Annotating variants for {sample_name}")
 
         # Check if output files exist and remove them
-       if os.path.exists(ann_vcf):
-           logger.info(f"Removing existing annotation file: {ann_vcf}")
-           os.remove(ann_vcf)
+        if os.path.exists(ann_vcf):
+            logger.info(f"Removing existing annotation file: {ann_vcf}")
+            os.remove(ann_vcf)
       
+        # Fix VCF file to remove problematic IUB ambiguity codes that can cause snpEff to fail
+        logger.info(f"Fixing VCF file to remove problematic IUB ambiguity codes: {filt_path}")
+        try:
+            from fix_vcf_for_snpeff import fix_vcf_for_snpeff
+            fix_vcf_for_snpeff(filt_path)
+            logger.info(f"VCF file fixed successfully: {filt_path}")
+        except (ImportError, Exception) as e:
+            logger.warning(f"Could not fix VCF file due to error: {str(e)}")
+            logger.warning("Proceeding with original VCF file - snpEff may fail if problematic variants are present")
+
         # Run snpEff
         cmd = f"{java_path} -jar -Xmx4g {snpeff_jar} {accession} {filt_path} -s {summary_html} > {ann_vcf}"
         run_command(cmd, shell=True)

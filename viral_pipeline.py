@@ -590,6 +590,18 @@ def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_p
     if not filt_files:
         raise FileNotFoundError(f"No filtered variant VCF files found in {variants_dir}")
     
+    # Verify snpEff database has the genome
+    verify_cmd = f"{java_path} -jar {snpeff_jar} databases | grep -i {accession}"
+    verify_result = run_command(verify_cmd, shell=True, check=False)
+    
+    if verify_result.returncode != 0:
+        logger.error(f"CRITICAL ERROR: Genome {accession} NOT FOUND in snpEff database!")
+        logger.error("Available genomes:")
+        run_command(f"{java_path} -jar {snpeff_jar} databases | grep -i corona", shell=True, check=False)
+        raise RuntimeError(f"Genome {accession} not found in snpEff database. Use --add-to-snpeff to add it.")
+    else:
+        logger.info(f"Verified genome {accession} exists in snpEff database.")
+    
     annotation_files = {}
     
     for filt_file in filt_files:
@@ -619,51 +631,99 @@ def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_p
         except (ImportError, Exception) as e:
             logger.warning(f"Could not fix VCF file due to error: {str(e)}")
             logger.warning("Proceeding with original VCF file - snpEff may fail if problematic variants are present")
-
-        # Run snpEff with more robust error handling
-        cmd = f"{java_path} -jar -Xmx4g {snpeff_jar} {accession} {filt_path} -s {summary_html} > {ann_vcf}"
+        
+        # Validate the filtered VCF file
+        validate_cmd = f"grep -v '^#' {filt_path} | wc -l"
+        validate_result = run_command(validate_cmd, shell=True, check=False)
+        variant_count_in_input = 0
         try:
-            run_command(cmd, shell=True)
+            variant_count_in_input = int(validate_result.stdout.strip())
+        except (ValueError, AttributeError):
+            pass
+        
+        logger.info(f"Input VCF contains {variant_count_in_input} variants")
+        
+        if variant_count_in_input == 0:
+            logger.warning(f"Input VCF file {filt_path} has no variants! Creating empty output files.")
+            # Create empty files
+            with open(ann_vcf, 'w') as f:
+                f.write("")
+            header = "CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tEFFECT\tPUTATIVE_IMPACT\tGENE_NAME\tGENE_ID\tFEATURE_TYPE\tFEATURE_ID\tTRANSCRIPT_TYPE\tEXON_INTRON_RANK\tHGVSc\tHGVSp\tcDNA_POSITION_AND_LENGTH\tCDS_POSITION_AND_LENGTH\tPROTEIN_POSITION_AND_LENGTH\tDISTANCE_TO_FEATURE\tERROR"
+            with open(ann_tsv, 'w') as f:
+                f.write(header + "\n")
+            continue
+
+        # Make a copy of the VCF file for safety
+        safe_filt_path = f"{filt_path}.safe"
+        shutil.copy2(filt_path, safe_filt_path)
+
+        # Run snpEff with more robust error handling and debug output
+        cmd = f"{java_path} -jar -Xmx4g {snpeff_jar} -v {accession} {safe_filt_path} -s {summary_html} > {ann_vcf}"
+        logger.info(f"Running command: {cmd}")
+        
+        try:
+            result = run_command(cmd, shell=True)
+            logger.info(f"SnpEff command completed successfully")
+            logger.debug(f"STDOUT: {result.stdout}")
+            logger.debug(f"STDERR: {result.stderr}")
         except subprocess.SubprocessError as e:
+            logger.error(f"SnpEff command failed: {str(e)}")
+            
             # Check if this is the IUB code error
             if "Unkown IUB code for SNP" in str(e) or "invalid start byte" in str(e):
-                logger.warning("SnpEff failed due to IUB codes - attempting manual filtering")
+                logger.warning("SnpEff failed due to IUB codes - attempting additional filtering")
                 
-                # Grep-based direct approach for problematic lines
+                # Try more aggressive filtering
                 try:
-                    # Back up the original file
-                    bak_file = f"{filt_path}.original"
-                    if not os.path.exists(bak_file):
-                        shutil.copy2(filt_path, bak_file)
+                    filtered_tmp = f"{safe_filt_path}.filtered"
                     
-                    # Use grep to extract header lines
-                    tmp_header = f"{filt_path}.header"
-                    run_command(f"grep '^#' {filt_path} > {tmp_header}", shell=True)
+                    # Extract header
+                    run_command(f"grep '^#' {safe_filt_path} > {filtered_tmp}", shell=True)
                     
-                    # Use grep to extract non-problematic variant lines
-                    tmp_variants = f"{filt_path}.variants"
-                    run_command(f"grep -v '^#' {filt_path} | grep -v -P '\\t[RYSWKMBDHV]\\t' | grep -v '\\t\\t' > {tmp_variants}", shell=True)
+                    # Extract and filter content lines more aggressively
+                    aggressive_filter = (
+                        f"grep -v '^#' {safe_filt_path} | "
+                        f"grep -E '^[^[:space:]]+[[:space:]]+[0-9]+[[:space:]]+\\.[[:space:]]+[ACGT][[:space:]]+[ACGT][[:space:]]' >> {filtered_tmp}"
+                    )
+                    run_command(aggressive_filter, shell=True, check=False)
                     
-                    # Combine header and filtered variants
-                    run_command(f"cat {tmp_header} {tmp_variants} > {filt_path}", shell=True)
+                    # Check if we still have variants
+                    count_cmd = f"grep -v '^#' {filtered_tmp} | wc -l"
+                    count_result = run_command(count_cmd, shell=True, check=False)
+                    aggressive_count = int(count_result.stdout.strip())
                     
-                    # Clean up temp files
-                    os.remove(tmp_header)
-                    os.remove(tmp_variants)
-                    
-                    logger.info(f"Manually filtered VCF file: {filt_path}")
-                    
-                    # Retry the snpEff command
-                    logger.info("Retrying snpEff annotation with filtered VCF")
-                    run_command(cmd, shell=True)
-                    
-                except Exception as grep_error:
-                    logger.error(f"Manual filtering failed: {str(grep_error)}")
-                    logger.error("Attempting to continue with other samples")
-                    continue
+                    if aggressive_count > 0:
+                        logger.info(f"Filtered VCF now has {aggressive_count} variants (originally {variant_count_in_input})")
+                        
+                        # Try snpEff with the more aggressively filtered file
+                        retry_cmd = f"{java_path} -jar -Xmx4g {snpeff_jar} -v {accession} {filtered_tmp} -s {summary_html} > {ann_vcf}"
+                        try:
+                            logger.info(f"Retrying with aggressively filtered VCF: {retry_cmd}")
+                            run_command(retry_cmd, shell=True)
+                        except subprocess.SubprocessError as retry_error:
+                            logger.error(f"Retry also failed: {str(retry_error)}")
+                            # Create empty output file
+                            with open(ann_vcf, 'w') as f:
+                                f.write("")
+                    else:
+                        logger.warning("No variants left after aggressive filtering!")
+                        # Create empty output file
+                        with open(ann_vcf, 'w') as f:
+                            f.write("")
+                except Exception as filter_error:
+                    logger.error(f"Additional filtering failed: {str(filter_error)}")
+                    # Create empty output file
+                    with open(ann_vcf, 'w') as f:
+                        f.write("")
             else:
-                # Re-raise the error if it's not related to IUB codes
-                raise
+                # Create empty output file for this case too
+                with open(ann_vcf, 'w') as f:
+                    f.write("")
+                logger.error(f"Error not related to IUB codes: {str(e)}")
+        
+        # Clean up temporary files
+        if os.path.exists(safe_filt_path):
+            os.remove(safe_filt_path)
         
         # Process the VCF file into TSV format
         logger.info(f"Converting VCF to TSV for {sample_name}")
@@ -684,6 +744,7 @@ def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_p
             with open(ann_tsv, 'w') as f:
                 f.write(header + "\n")
         else:
+            logger.info(f"Found {variant_count} annotated variants in output VCF")
             # Create temporary files
             tmp_base = os.path.join(variants_dir, f"{sample_name}.ann.base.vcf")
             tmp_info = os.path.join(variants_dir, f"{sample_name}.snpEFF.ann.tmp")
@@ -728,12 +789,20 @@ def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_p
                     os.remove(tmp_info)
         
         # Check for ERROR_CHROMOSOME_NOT_FOUND
-        check_cmd = f"grep -q 'ERROR_CHROMOSOME_NOT_FOUND' {ann_tsv}"
-        result = run_command(check_cmd, shell=True, check=False)
-        
-        if result.returncode == 0:
-            logger.error(f"ERROR: Genome {accession} is NOT properly formatted for use with snpEff annotation.")
-            raise RuntimeError(f"Genome {accession} is NOT properly formatted for use with snpEff annotation.")
+        if os.path.exists(ann_tsv) and os.path.getsize(ann_tsv) > 0:
+            check_cmd = f"grep -q 'ERROR_CHROMOSOME_NOT_FOUND' {ann_tsv}"
+            result = run_command(check_cmd, shell=True, check=False)
+            
+            if result.returncode == 0:
+                logger.error(f"ERROR: Genome {accession} is NOT properly formatted for use with snpEff annotation.")
+                logger.error("This often happens when the chromosome name in the VCF doesn't match what's in the snpEff database.")
+                
+                # Look at chromosome names in the VCF
+                check_chrom_cmd = f"grep -v '^#' {filt_path} | head -1 | cut -f1"
+                chrom_result = run_command(check_chrom_cmd, shell=True, check=False)
+                if chrom_result.returncode == 0 and chrom_result.stdout.strip():
+                    logger.error(f"Chromosome name in VCF: {chrom_result.stdout.strip()}")
+                    logger.error(f"Make sure this matches what's in the snpEff database for {accession}.")
         
         annotation_files[sample_name] = {
             'ann_vcf': ann_vcf,

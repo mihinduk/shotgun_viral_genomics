@@ -8,7 +8,7 @@ import re
 import sys
 import argparse
 import logging
-import subprocess  # Added for subprocess calls in all methods
+import subprocess
 
 # Configure logging
 logging.basicConfig(
@@ -34,57 +34,47 @@ def fix_vcf_for_snpeff(vcf_path):
     # Create a temporary file for the fixed VCF
     fixed_vcf = f"{vcf_path}.fixed"
     
-    # Try to use most permissive reading mode
+    # First approach: Use grep directly (most reliable for binary files)
     try:
-        # Method 1: First try reading line by line in binary mode, with robust pattern matching
-        with open(vcf_path, 'rb') as infile, open(fixed_vcf, 'wb') as outfile:
-            line_num = 0
-            skipped_lines = 0
-            
-            # Patterns for problematic variant lines in binary mode
-            # Look for tab + single char + tab or empty alt field
-            iub_pattern = re.compile(b'\t[RYSWKMBDHV]\t')
-            empty_alt_pattern = re.compile(b'\t\t')
-            header_pattern = re.compile(b'^#')
-            
-            for line in infile:
-                line_num += 1
-                
-                # Always keep header lines (starting with #)
-                if header_pattern.match(line):
-                    outfile.write(line)
-                    continue
-                
-                # Skip lines with IUB codes or empty ALT fields
-                if iub_pattern.search(line) or empty_alt_pattern.search(line):
-                    skipped_lines += 1
-                    logger.debug(f"Skipping problematic variant at line {line_num}")
-                    continue
-                
-                # Write good lines to output
-                outfile.write(line)
+        logger.info("Using grep-based filtering to remove problematic lines")
         
-        if skipped_lines > 0:
-            logger.info(f"Removed {skipped_lines} problematic variant lines from VCF file")
+        # Extract header lines (starting with #)
+        grep_header_cmd = f"grep '^#' {vcf_path} > {fixed_vcf}"
+        subprocess.run(grep_header_cmd, shell=True, check=True)
+        
+        # Extract content lines, filtering out problematic ones
+        # - Skip lines with IUB ambiguity codes in the ALT field (tab + IUB code + tab)
+        # - Skip lines with empty ALT field (tab + tab)
+        grep_content_cmd = f"grep -v '^#' {vcf_path} | grep -v -P '\\t[RYSWKMBDHV]\\t' | grep -v '\\t\\t' >> {fixed_vcf}"
+        subprocess.run(grep_content_cmd, shell=True, check=True)
+        
+        # Count filtered lines by comparing original with fixed
+        orig_count = int(subprocess.run(f"grep -v '^#' {vcf_path} | wc -l", shell=True, capture_output=True, text=True).stdout.strip())
+        fixed_count = int(subprocess.run(f"grep -v '^#' {fixed_vcf} | wc -l", shell=True, capture_output=True, text=True).stdout.strip())
+        filtered_count = orig_count - fixed_count
+        
+        logger.info(f"Removed {filtered_count} problematic variant lines from VCF file")
         
         # Replace original with fixed version
         os.rename(fixed_vcf, vcf_path)
         return vcf_path
         
     except Exception as e:
-        logger.warning(f"Binary processing failed: {str(e)}")
-        logger.warning("Trying alternative method...")
+        logger.warning(f"Grep-based filtering failed: {str(e)}")
         
-        # Method 2: If binary processing fails, try using the 'latin-1' encoding which accepts any byte value
+        # If the first approach fails, try a second approach with text processing
         try:
+            logger.warning("Trying text-based processing with latin-1 encoding")
+            
+            # Use latin-1 encoding which can handle any byte value
             with open(vcf_path, 'r', encoding='latin-1', errors='replace') as infile, \
                  open(fixed_vcf, 'w', encoding='latin-1') as outfile:
                 
                 line_num = 0
                 skipped_lines = 0
                 
-                # Compile patterns for problematic lines
-                problematic_pattern = re.compile(r'\t[RYSWKMBDHV]\t|\t\t')
+                # Pattern for IUB codes in ALT field or empty ALT field
+                pattern = re.compile(r'\t[RYSWKMBDHV]\t|\t\t')
                 
                 for line in infile:
                     line_num += 1
@@ -95,54 +85,28 @@ def fix_vcf_for_snpeff(vcf_path):
                         continue
                     
                     # Skip problematic lines
-                    if problematic_pattern.search(line):
+                    if pattern.search(line):
                         skipped_lines += 1
-                        logger.debug(f"Skipping problematic variant at line {line_num}")
                         continue
                     
-                    # Write good lines
+                    # Keep good lines
                     outfile.write(line)
             
-            if skipped_lines > 0:
-                logger.info(f"Removed {skipped_lines} problematic variant lines using latin-1 encoding")
+            logger.info(f"Removed {skipped_lines} problematic variant lines using text processing")
             
             # Replace original with fixed version
             os.rename(fixed_vcf, vcf_path)
             return vcf_path
             
         except Exception as e:
-            logger.error(f"Failed to process VCF file with both methods: {str(e)}")
+            logger.error(f"Text-based processing also failed: {str(e)}")
             
-            # If all else fails, try to use a direct regex-based approach on raw bytes
-            try:
-                import subprocess
+            # Clean up any partial files
+            if os.path.exists(fixed_vcf):
+                os.remove(fixed_vcf)
                 
-                logger.warning("Attempting direct grep-based filtering...")
-                
-                # Use grep to remove problematic lines - this works on binary files
-                grep_cmd = f"grep -v -P '\\t[RYSWKMBDHV]\\t|\\t\\t' {vcf_path} > {fixed_vcf}.tmp"
-                grep_header = f"grep '^#' {vcf_path} > {fixed_vcf}"
-                grep_content = f"grep -v '^#' {fixed_vcf}.tmp >> {fixed_vcf}"
-                
-                subprocess.run(grep_header, shell=True, check=True)
-                subprocess.run(grep_cmd, shell=True, check=True)
-                subprocess.run(grep_content, shell=True, check=True)
-                
-                # Clean up temporary file
-                if os.path.exists(f"{fixed_vcf}.tmp"):
-                    os.remove(f"{fixed_vcf}.tmp")
-                
-                logger.info("Used grep-based filtering to remove problematic lines")
-                
-                # Replace original with fixed version
-                os.rename(fixed_vcf, vcf_path)
-                return vcf_path
-                
-            except Exception as e:
-                logger.error(f"All VCF fixing methods failed: {str(e)}")
-                if os.path.exists(fixed_vcf):
-                    os.remove(fixed_vcf)
-                raise
+            # Rethrow the exception
+            raise RuntimeError(f"Failed to process VCF file: {str(e)}")
     
     return vcf_path
 

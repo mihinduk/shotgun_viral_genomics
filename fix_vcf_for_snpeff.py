@@ -8,6 +8,7 @@ import re
 import sys
 import argparse
 import logging
+import subprocess  # Added for subprocess calls in all methods
 
 # Configure logging
 logging.basicConfig(
@@ -114,7 +115,6 @@ def fix_vcf_for_snpeff(vcf_path):
             
             # If all else fails, try to use a direct regex-based approach on raw bytes
             try:
-                import re
                 import subprocess
                 
                 logger.warning("Attempting direct grep-based filtering...")

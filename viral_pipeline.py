@@ -634,7 +634,6 @@ def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_p
                     # Back up the original file
                     bak_file = f"{filt_path}.original"
                     if not os.path.exists(bak_file):
-                        import shutil
                         shutil.copy2(filt_path, bak_file)
                     
                     # Use grep to extract header lines
@@ -669,36 +668,64 @@ def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_p
         # Process the VCF file into TSV format
         logger.info(f"Converting VCF to TSV for {sample_name}")
         
-        # Create temporary files
-        tmp_base = os.path.join(variants_dir, f"{sample_name}.ann.base.vcf")
-        tmp_info = os.path.join(variants_dir, f"{sample_name}.snpEFF.ann.tmp")
+        # Check if the VCF file actually contains variants
+        check_variants_cmd = f"grep -v '^#' {ann_vcf} | wc -l"
+        variant_check = run_command(check_variants_cmd, shell=True, check=False)
+        variant_count = 0
+        try:
+            variant_count = int(variant_check.stdout.strip())
+        except (ValueError, AttributeError):
+            logger.warning(f"Could not determine variant count from: {variant_check.stdout}")
         
-        # Extract annotations
-        run_command(
-            f"grep -v '^##' {ann_vcf} | "
-            f"tail -n+2 | "
-            f"cut -f8 | "
-            f"sed 's/|/\\t/g' | "
-            f"cut -f1-16 | "
-            f"sed '1i INFO\\tEFFECT\\tPUTATIVE_IMPACT\\tGENE_NAME\\tGENE_ID\\tFEATURE_TYPE\\tFEATURE_ID\\tTRANSCRIPT_TYPE\\tEXON_INTRON_RANK\\tHGVSc\\tHGVSp\\tcDNA_POSITION_AND_LENGTH\\tCDS_POSITION_AND_LENGTH\\tPROTEIN_POSITION_AND_LENGTH\\tDISTANCE_TO_FEATURE\\tERROR' > {tmp_info}",
-            shell=True
-        )
-        
-        # Extract base VCF information
-        run_command(
-            f"grep -v '^##' {ann_vcf} | cut -f1-7 > {tmp_base}",
-            shell=True
-        )
-        
-        # Combine into final TSV
-        run_command(
-            f"paste {tmp_base} {tmp_info} > {ann_tsv}",
-            shell=True
-        )
-        
-        # Cleanup temporary files
-        os.remove(tmp_base)
-        os.remove(tmp_info)
+        if variant_count == 0:
+            logger.warning(f"No variants found in {ann_vcf}. Creating empty TSV file.")
+            # Create an empty TSV file with just a header
+            header = "CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tEFFECT\tPUTATIVE_IMPACT\tGENE_NAME\tGENE_ID\tFEATURE_TYPE\tFEATURE_ID\tTRANSCRIPT_TYPE\tEXON_INTRON_RANK\tHGVSc\tHGVSp\tcDNA_POSITION_AND_LENGTH\tCDS_POSITION_AND_LENGTH\tPROTEIN_POSITION_AND_LENGTH\tDISTANCE_TO_FEATURE\tERROR"
+            with open(ann_tsv, 'w') as f:
+                f.write(header + "\n")
+        else:
+            # Create temporary files
+            tmp_base = os.path.join(variants_dir, f"{sample_name}.ann.base.vcf")
+            tmp_info = os.path.join(variants_dir, f"{sample_name}.snpEFF.ann.tmp")
+            
+            try:
+                # Extract annotations - handle with more robust error checking
+                extract_cmd = (
+                    f"grep -v '^##' {ann_vcf} | "
+                    f"tail -n+2 | "
+                    f"cut -f8 | "
+                    f"sed 's/|/\\t/g' | "
+                    f"cut -f1-16 | "
+                    f"sed '1i INFO\\tEFFECT\\tPUTATIVE_IMPACT\\tGENE_NAME\\tGENE_ID\\tFEATURE_TYPE\\tFEATURE_ID\\tTRANSCRIPT_TYPE\\tEXON_INTRON_RANK\\tHGVSc\\tHGVSp\\tcDNA_POSITION_AND_LENGTH\\tCDS_POSITION_AND_LENGTH\\tPROTEIN_POSITION_AND_LENGTH\\tDISTANCE_TO_FEATURE\\tERROR' > {tmp_info}"
+                )
+                run_command(extract_cmd, shell=True, check=False)
+                
+                # Extract base VCF information
+                base_cmd = f"grep -v '^##' {ann_vcf} | cut -f1-7 > {tmp_base}"
+                run_command(base_cmd, shell=True, check=False)
+                
+                # Check if both files exist and are not empty
+                if os.path.exists(tmp_base) and os.path.exists(tmp_info) and os.path.getsize(tmp_base) > 0 and os.path.getsize(tmp_info) > 0:
+                    # Combine into final TSV
+                    combine_cmd = f"paste {tmp_base} {tmp_info} > {ann_tsv}"
+                    run_command(combine_cmd, shell=True, check=False)
+                else:
+                    logger.warning(f"Temporary files missing or empty. Creating basic TSV file.")
+                    header = "CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tEFFECT\tPUTATIVE_IMPACT\tGENE_NAME\tGENE_ID\tFEATURE_TYPE\tFEATURE_ID\tTRANSCRIPT_TYPE\tEXON_INTRON_RANK\tHGVSc\tHGVSp\tcDNA_POSITION_AND_LENGTH\tCDS_POSITION_AND_LENGTH\tPROTEIN_POSITION_AND_LENGTH\tDISTANCE_TO_FEATURE\tERROR"
+                    with open(ann_tsv, 'w') as f:
+                        f.write(header + "\n")
+            except Exception as e:
+                logger.error(f"Error converting VCF to TSV: {str(e)}")
+                logger.warning(f"Creating basic TSV file as fallback")
+                header = "CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tEFFECT\tPUTATIVE_IMPACT\tGENE_NAME\tGENE_ID\tFEATURE_TYPE\tFEATURE_ID\tTRANSCRIPT_TYPE\tEXON_INTRON_RANK\tHGVSc\tHGVSp\tcDNA_POSITION_AND_LENGTH\tCDS_POSITION_AND_LENGTH\tPROTEIN_POSITION_AND_LENGTH\tDISTANCE_TO_FEATURE\tERROR"
+                with open(ann_tsv, 'w') as f:
+                    f.write(header + "\n")
+            finally:
+                # Cleanup temporary files
+                if os.path.exists(tmp_base):
+                    os.remove(tmp_base)
+                if os.path.exists(tmp_info):
+                    os.remove(tmp_info)
         
         # Check for ERROR_CHROMOSOME_NOT_FOUND
         check_cmd = f"grep -q 'ERROR_CHROMOSOME_NOT_FOUND' {ann_tsv}"

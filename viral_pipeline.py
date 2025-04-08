@@ -555,9 +555,51 @@ def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_p
             logger.warning(f"Could not fix VCF file due to error: {str(e)}")
             logger.warning("Proceeding with original VCF file - snpEff may fail if problematic variants are present")
 
-        # Run snpEff
+        # Run snpEff with more robust error handling
         cmd = f"{java_path} -jar -Xmx4g {snpeff_jar} {accession} {filt_path} -s {summary_html} > {ann_vcf}"
-        run_command(cmd, shell=True)
+        try:
+            run_command(cmd, shell=True)
+        except subprocess.SubprocessError as e:
+            # Check if this is the IUB code error
+            if "Unkown IUB code for SNP" in str(e) or "invalid start byte" in str(e):
+                logger.warning("SnpEff failed due to IUB codes - attempting manual filtering")
+                
+                # Grep-based direct approach for problematic lines
+                try:
+                    # Back up the original file
+                    bak_file = f"{filt_path}.original"
+                    if not os.path.exists(bak_file):
+                        import shutil
+                        shutil.copy2(filt_path, bak_file)
+                    
+                    # Use grep to extract header lines
+                    tmp_header = f"{filt_path}.header"
+                    run_command(f"grep '^#' {filt_path} > {tmp_header}", shell=True)
+                    
+                    # Use grep to extract non-problematic variant lines
+                    tmp_variants = f"{filt_path}.variants"
+                    run_command(f"grep -v '^#' {filt_path} | grep -v -P '\\t[RYSWKMBDHV]\\t' | grep -v '\\t\\t' > {tmp_variants}", shell=True)
+                    
+                    # Combine header and filtered variants
+                    run_command(f"cat {tmp_header} {tmp_variants} > {filt_path}", shell=True)
+                    
+                    # Clean up temp files
+                    os.remove(tmp_header)
+                    os.remove(tmp_variants)
+                    
+                    logger.info(f"Manually filtered VCF file: {filt_path}")
+                    
+                    # Retry the snpEff command
+                    logger.info("Retrying snpEff annotation with filtered VCF")
+                    run_command(cmd, shell=True)
+                    
+                except Exception as grep_error:
+                    logger.error(f"Manual filtering failed: {str(grep_error)}")
+                    logger.error("Attempting to continue with other samples")
+                    continue
+            else:
+                # Re-raise the error if it's not related to IUB codes
+                raise
         
         # Process the VCF file into TSV format
         logger.info(f"Converting VCF to TSV for {sample_name}")

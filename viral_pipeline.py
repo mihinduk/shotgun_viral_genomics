@@ -71,7 +71,7 @@ def parse_args() -> argparse.Namespace:
     snpeff_group = parser.add_argument_group("SnpEff")
     snpeff_group.add_argument("--add-to-snpeff", action="store_true", help="Attempt to add genome to snpEff if not present")
     snpeff_group.add_argument("--snpeff-jar", default="snpEff.jar", help="Path to snpEff.jar")
-    snpeff_group.add_argument("--java-path", default="java", help="Path to Java executable")
+    snpeff_group.add_argument("--java-path", /default="java", help="Path to Java executable")
     
     return parser.parse_args()
 
@@ -157,7 +157,7 @@ def run_command(cmd: Union[str, List[str]], shell: bool = False, check: bool = T
     
     return result
 
-def check_snpeff_database(accession: str, snpeff_jar: str) -> bool:
+def check_snpeff_database(accession: str, snpeff_jar: str, java_path: str = "java") -> bool:
     """
     Check if a genome is in the snpEff database.
     

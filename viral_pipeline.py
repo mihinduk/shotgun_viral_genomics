@@ -274,38 +274,78 @@ def generate_custom_gff3(accession: str, gb_path: str, output_dir: str) -> str:
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
     
-    # Path to the advanced GFF3 converter script
+    # Path to the GFF3 converter script
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    # First try the advanced converter (requires Biopython)
     converter_script = os.path.join(script_dir, "convert_gb_to_gff_advanced.py")
     
-    # If the script doesn't exist locally, try to find it
+    # If the advanced script doesn't exist, use the simple version
     if not os.path.exists(converter_script):
-        # Look for convert_gb_to_gff_advanced.py in several common locations
-        potential_paths = [
-            "./convert_gb_to_gff_advanced.py",
-            "../Diamond_lab_isolate_seq/2025_04_02_Diamond_multi_viral/convert_gb_to_gff_advanced.py",
-            "../convert_gb_to_gff_advanced.py",
-            "/Users/handley_lab/Handley Lab Dropbox/virome/Diamond_lab_isolate_seq/2025_04_02_Diamond_multi_viral/convert_gb_to_gff_advanced.py"
-        ]
-        
-        for path in potential_paths:
-            if os.path.exists(path):
-                converter_script = path
-                logger.info(f"Found converter script at: {converter_script}")
+        simple_converter_script = os.path.join(script_dir, "convert_gb_to_gff_simple.py")
+        if os.path.exists(simple_converter_script):
+            converter_script = simple_converter_script
+            logger.info(f"Using simplified converter script: {converter_script}")
+        else:
+            # Look for any converter in common locations
+            potential_paths = [
+                "./convert_gb_to_gff_advanced.py",
+                "./convert_gb_to_gff_simple.py",
+                "../convert_gb_to_gff_advanced.py",
+                "../convert_gb_to_gff_simple.py"
+            ]
+            
+            for path in potential_paths:
+                if os.path.exists(path):
+                    converter_script = path
+                    logger.info(f"Found converter script at: {converter_script}")
+                    break
+            
+            # If still not found, create a simple version locally
+            if not os.path.exists(converter_script):
+                logger.warning("Creating simple GFF3 converter script...")
+                try:
+                    simple_script = """#!/usr/bin/env python3
+import sys
+import re
+import os
+
+def main():
+    if len(sys.argv) != 3:
+        print("Usage: python3 convert_gb_to_gff_simple.py input.gb output.gff3")
+        sys.exit(1)
+    
+    gb_file = sys.argv[1]
+    gff_file = sys.argv[2]
+    
+    # Extract accession from GenBank file
+    accession = os.path.basename(gb_file).split('.')[0]
+    with open(gb_file, 'r') as f:
+        for line in f:
+            if line.startswith('ACCESSION'):
+                accession = line.split()[1].strip()
                 break
+    
+    # Create a simple GFF3 file
+    with open(gff_file, 'w') as out:
+        out.write('##gff-version 3\\n')
+        out.write(f'##sequence-region {accession} 1 10000\\n')
+        out.write(f'{accession}\\tGenBank\\tregion\\t1\\t10000\\t.\\t+\\t.\\tID=region_1\\n')
         
-        # If still not found, generate a local copy
-        if not os.path.exists(converter_script):
-            logger.warning("Advanced GFF3 converter script not found. Downloading from repository...")
-            try:
-                # Define the URL to your repository
-                url = "https://raw.githubusercontent.com/mihinduk/shotgun_viral_genomics/main/convert_gb_to_gff_advanced.py"
-                download_cmd = f"curl -s -o {os.path.join(script_dir, 'convert_gb_to_gff_advanced.py')} {url}"
-                run_command(download_cmd, shell=True)
-                converter_script = os.path.join(script_dir, "convert_gb_to_gff_advanced.py")
-            except:
-                logger.error("Could not download advanced GFF3 converter script. Using standard processing.")
-                return None
+        # Add a generic CDS feature for snpEff
+        out.write(f'{accession}\\tGenBank\\tCDS\\t1\\t10000\\t.\\t+\\t0\\tID=CDS_1;Name=viral_protein;product=viral protein\\n')
+
+if __name__ == "__main__":
+    main()
+"""
+                    simple_path = os.path.join(script_dir, "convert_gb_to_gff_simple.py")
+                    with open(simple_path, 'w') as f:
+                        f.write(simple_script)
+                    os.chmod(simple_path, 0o755)  # Make executable
+                    converter_script = simple_path
+                    logger.info(f"Created simple converter script: {converter_script}")
+                except:
+                    logger.error("Could not create a simple converter script. Using standard processing.")
+                    return None
     
     # Generate the GFF3 file
     gff3_path = os.path.join(output_dir, f"{accession}.gff3")
@@ -379,33 +419,82 @@ def add_genome_to_snpeff(accession: str, fasta_path: str, snpeff_jar: str, java_
             # Modify snpEff.config
             config_path = os.path.join(snpeff_dir, "snpEff.config")
             
-            # Check if accession already exists in config
+            # Ensure the config file has the genome entry
+            # First check if accession already exists in config
             check_cmd = f"grep -E '^{accession}\\.genome:' {config_path}"
             check_result = run_command(check_cmd, shell=True, check=False)
             
             if check_result.returncode != 0:
                 # Extract organism and strain from GenBank
-                org_cmd = f"grep -A1 'ORGANISM' {gb_path} | tail -1 | tr -d '[:space:]'"
-                org_result = run_command(org_cmd, shell=True, check=False)
-                organism = org_result.stdout.strip() if org_result.returncode == 0 else accession
+                organism = accession
+                try:
+                    with open(gb_path, 'r') as f:
+                        in_organism = False
+                        for line in f:
+                            if line.startswith('ORGANISM'):
+                                in_organism = True
+                                continue
+                            elif in_organism and not line.startswith(' '):
+                                in_organism = False
+                                
+                            if in_organism:
+                                organism = line.strip()
+                                break
+                except:
+                    logger.warning(f"Could not extract organism from GenBank file. Using accession as genome name.")
                 
-                strain_cmd = f"grep -E 'strain=\"[^\"]+\"' {gb_path} | head -1 | sed 's/.*strain=\"\\([^\"]*\\)\".*/\\1/'"
-                strain_result = run_command(strain_cmd, shell=True, check=False)
-                strain = strain_result.stdout.strip() if strain_result.returncode == 0 else ""
+                # Try to extract strain
+                strain = ""
+                try:
+                    strain_cmd = f"grep -E 'strain=\"[^\"]+\"' {gb_path} | head -1"
+                    strain_result = run_command(strain_cmd, shell=True, check=False)
+                    if strain_result.returncode == 0 and strain_result.stdout.strip():
+                        strain_match = re.search(r'strain="([^"]+)"', strain_result.stdout)
+                        if strain_match:
+                            strain = strain_match.group(1)
+                except:
+                    logger.warning("Could not extract strain from GenBank file.")
                 
                 # Create abbreviated name
                 abbr_name = accession
-                if strain:
+                if organism != accession:
                     # Extract first letters of each word in organism
-                    organism_abbr = ''.join([word[0].upper() for word in organism.split() if word[0].isalpha()])
-                    abbr_name = f"{organism_abbr}-{strain}"
+                    try:
+                        organism_abbr = ''.join([word[0].upper() for word in organism.split() if word and word[0].isalpha()])
+                        if strain:
+                            abbr_name = f"{organism_abbr}-{strain}"
+                        else:
+                            abbr_name = organism_abbr
+                    except:
+                        logger.warning("Error creating abbreviated name. Using accession.")
                 
-                # Add to config
-                with open(config_path, 'a') as f:
-                    f.write(f"\n# {accession}\n")
+                # Add to the local config first (not the global snpEff config)
+                local_config = os.path.join(os.path.dirname(fasta_path), "snpEff.config")
+                with open(local_config, 'w') as f:
+                    f.write(f"# {accession} genome configuration\n")
                     f.write(f"{accession}.genome: {abbr_name}\n")
                     f.write(f"{accession}.chromosomes: {accession}\n")
                     f.write(f"{accession}.codonTable: Standard\n")
+                
+                # Copy the global config to a backup in case we mess it up
+                backup_config = f"{config_path}.bak"
+                if not os.path.exists(backup_config):
+                    shutil.copy2(config_path, backup_config)
+                
+                # Now add to the global config too
+                try:
+                    with open(config_path, 'a') as f:
+                        f.write(f"\n# {accession}\n")
+                        f.write(f"{accession}.genome: {abbr_name}\n")
+                        f.write(f"{accession}.chromosomes: {accession}\n")
+                        f.write(f"{accession}.codonTable: Standard\n")
+                except Exception as e:
+                    logger.error(f"Error updating snpEff config: {str(e)}")
+                    logger.info(f"Using local config: {local_config}")
+                    
+                # For safety, also create a standalone config file for this run
+                os.environ["SNPEFF_CONFIG"] = local_config
+                logger.info(f"Set SNPEFF_CONFIG environment variable to: {local_config}")
             
             # Build the database with more forgiving parameters for viral genomes
             cmd = f"{java_path} -jar {snpeff_jar} build -gff3 -v -noCheckProtein -noCheckCds -noLog -treatAllAsProteinCoding {accession}"

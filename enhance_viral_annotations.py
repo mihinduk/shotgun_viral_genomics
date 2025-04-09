@@ -398,13 +398,13 @@ def add_genome_to_snpeff(accession: str, fasta_path: str, snpeff_jar: str, java_
                     f.write(f"{accession}.chromosomes: {accession}\n")
                     f.write(f"{accession}.codonTable: Standard\n")
             
-            # Build the database
-            cmd = f"{java_path} -jar {snpeff_jar} build -gff3 -v -noCheckProtein -noCheckCds {accession}"
+            # Build the database with more forgiving parameters for viral genomes
+            cmd = f"{java_path} -jar {snpeff_jar} build -gff3 -v -noCheckProtein -noCheckCds -noLog -treatAllAsProteinCoding {accession}"
             result = run_command(cmd, shell=True, check=False)
     else:
-        # Use standard GenBank approach
+        # Use standard GenBank approach with forgiving parameters
         logger.info(f"Using standard GenBank approach for genome {accession}")
-        cmd = f"{java_path} -jar {snpeff_jar} build -genbank -v -noCheckProtein {accession}"
+        cmd = f"{java_path} -jar {snpeff_jar} build -genbank -v -noCheckProtein -noCheckCds -noLog -treatAllAsProteinCoding {accession}"
         result = run_command(cmd, shell=True, check=False)
     
     # Check if build was successful

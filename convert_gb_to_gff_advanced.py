@@ -58,13 +58,24 @@ def get_feature_id(feature, feature_counter, feature_type=None):
     Generate a unique ID for a feature.
     For CDS, use the protein_id if available.
     For other features, combine feature type and a counter.
+    
+    This enhanced version prioritizes product names for better annotation in snpEff.
     """
     if feature_type is None:
         feature_type = feature.type
-        
+    
+    # First priority: use product name for CDS and mat_peptide features
+    if feature_type in ['CDS', 'mat_peptide'] and 'product' in feature.qualifiers:
+        product_name = feature.qualifiers['product'][0]
+        clean_name = clean_product_name(product_name)
+        # Add a unique identifier to ensure uniqueness
+        return f"{clean_name}_{feature_counter[feature_type]}"
+    
+    # Second priority: use protein_id for CDS features    
     if feature_type == 'CDS' and 'protein_id' in feature.qualifiers:
         return feature.qualifiers['protein_id'][0]
-        
+    
+    # Third priority: use gene name    
     gene_name = get_gene_name(feature)
     product_name = get_product_name(feature)
     
@@ -220,8 +231,12 @@ def convert_genbank_to_gff3(genbank_file, gff_output, source="GenBank", verbose=
                 
             # Process CDS features specially
             elif feature_type == 'CDS':
-                # Create a unique ID for this CDS
-                if 'protein_id' in feature.qualifiers:
+                # Create a unique ID for this CDS - prioritize product name
+                if 'product' in feature.qualifiers:
+                    product_name = feature.qualifiers['product'][0]
+                    clean_name = clean_product_name(product_name)
+                    feature_id = f"{clean_name}_{actual_counter[feature_type]}"
+                elif 'protein_id' in feature.qualifiers:
                     feature_id = feature.qualifiers['protein_id'][0]
                 else:
                     feature_id = f"cds_{actual_counter[feature_type]}"
@@ -237,20 +252,24 @@ def convert_genbank_to_gff3(genbank_file, gff_output, source="GenBank", verbose=
                 attributes = [f"ID={feature_id}"]
                 if parent_id:
                     attributes.append(f"Parent={parent_id}")
-                    
-                if 'protein_id' in feature.qualifiers:
-                    attributes.append(f"protein_id={feature.qualifiers['protein_id'][0]}")
-                    
+                
+                # Add name attribute based on product for better display in snpEff
                 if 'product' in feature.qualifiers:
-                    attributes.append(f"product={feature.qualifiers['product'][0]}")
+                    product_name = feature.qualifiers['product'][0]
+                    attributes.append(f"product={product_name}")
+                    attributes.append(f"Name={product_name}")
                     
                     # Check if this is a polyprotein
-                    product = feature.qualifiers['product'][0].lower()
+                    product = product_name.lower()
                     if 'polyprotein' in product:
                         # Store this polyprotein for reference by mat_peptide features
                         polyproteins[feature_id] = {'feature': feature}
                         if verbose:
                             print(f"Found polyprotein: {feature_id} - {product}")
+                
+                # Always include protein_id if available
+                if 'protein_id' in feature.qualifiers:
+                    attributes.append(f"protein_id={feature.qualifiers['protein_id'][0]}")
                 
                 # Add additional qualifiers
                 for key, values in feature.qualifiers.items():

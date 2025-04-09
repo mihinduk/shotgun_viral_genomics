@@ -177,6 +177,143 @@ def check_snpeff_database(accession: str, snpeff_jar: str, java_path: str = "jav
     
     return result.returncode == 0
 
+def check_genome_complexity(accession: str, fasta_path: str) -> bool:
+    """
+    Check if a genome requires custom GFF3 processing due to complex annotation structure.
+    
+    Args:
+        accession: Genome accession number
+        fasta_path: Path to the genome FASTA file
+        
+    Returns:
+        True if genome needs custom GFF3, False if standard GenBank processing is adequate
+    """
+    logger.info(f"Analyzing annotation complexity for genome: {accession}")
+    
+    # Download GenBank file to analyze annotation structure
+    gb_path = fasta_path.replace(".fasta", ".gb")
+    if not os.path.exists(gb_path):
+        try:
+            cmd = f"efetch -db nucleotide -id {accession} -format gb > {gb_path}"
+            run_command(cmd, shell=True, check=False)
+        except:
+            logger.warning(f"Could not download GenBank for complexity analysis. Using standard processing.")
+            return False
+    
+    try:
+        # Check for specific complex annotation patterns
+        complex_patterns = [
+            # Check for polyproteins
+            "codon_start=1.*product=\".*polyprotein.*\"",
+            # Check for mat_peptide features
+            "mat_peptide[ ]+[0-9]+\.\.[0-9]+",
+            # Check for CDS with gene name in product
+            "CDS[ ]+[0-9]+\.\.[0-9]+.*product=\".*protein.*\"",
+            # Check for multiple genes with same product
+            "product=\"nonstructural polyprotein.*\".*product=\"nonstructural polyprotein",
+            # Check for POLY gene
+            "gene=\"POLY\"",
+            # Check for Alphavirus-like patterns
+            "product=\".*nsP[1-4].*\"",
+            # Check specifically for common virus families that need custom handling
+            "Togaviridae|Picornaviridae|Flaviviridae|Coronaviridae"
+        ]
+        
+        # Check each pattern
+        needs_custom_gff = False
+        for pattern in complex_patterns:
+            cmd = f"grep -E '{pattern}' {gb_path}"
+            result = run_command(cmd, shell=True, check=False)
+            if result.returncode == 0 and result.stdout.strip():
+                logger.info(f"Complex annotation pattern detected: {pattern}")
+                needs_custom_gff = True
+                break
+        
+        if needs_custom_gff:
+            # Get virus family for additional context
+            cmd = f"grep -A2 'ORGANISM' {gb_path}"
+            family_result = run_command(cmd, shell=True, check=False)
+            if family_result.returncode == 0:
+                logger.info(f"Taxonomy info: {family_result.stdout.strip()}")
+                
+            logger.info(f"Genome {accession} requires custom GFF3 processing due to complex annotation structure")
+        else:
+            logger.info(f"Genome {accession} has standard annotation structure - using regular GenBank processing")
+            
+        return needs_custom_gff
+    
+    except Exception as e:
+        logger.warning(f"Error analyzing genome complexity: {str(e)}. Using standard processing.")
+        return False
+        
+def generate_custom_gff3(accession: str, gb_path: str, output_dir: str) -> str:
+    """
+    Generate custom GFF3 for complex viral genomes.
+    
+    Args:
+        accession: Genome accession number
+        gb_path: Path to the GenBank file
+        output_dir: Directory to save the GFF3 file
+        
+    Returns:
+        Path to the generated GFF3 file
+    """
+    logger.info(f"Generating custom GFF3 for genome: {accession}")
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Path to the advanced GFF3 converter script
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    converter_script = os.path.join(script_dir, "convert_gb_to_gff_advanced.py")
+    
+    # If the script doesn't exist locally, try to find it
+    if not os.path.exists(converter_script):
+        # Look for convert_gb_to_gff_advanced.py in several common locations
+        potential_paths = [
+            "./convert_gb_to_gff_advanced.py",
+            "../Diamond_lab_isolate_seq/2025_04_02_Diamond_multi_viral/convert_gb_to_gff_advanced.py",
+            "../convert_gb_to_gff_advanced.py",
+            "/Users/handley_lab/Handley Lab Dropbox/virome/Diamond_lab_isolate_seq/2025_04_02_Diamond_multi_viral/convert_gb_to_gff_advanced.py"
+        ]
+        
+        for path in potential_paths:
+            if os.path.exists(path):
+                converter_script = path
+                logger.info(f"Found converter script at: {converter_script}")
+                break
+        
+        # If still not found, generate a local copy
+        if not os.path.exists(converter_script):
+            logger.warning("Advanced GFF3 converter script not found. Downloading from repository...")
+            try:
+                # Define the URL to your repository
+                url = "https://raw.githubusercontent.com/mihinduk/shotgun_viral_genomics/main/convert_gb_to_gff_advanced.py"
+                download_cmd = f"curl -s -o {os.path.join(script_dir, 'convert_gb_to_gff_advanced.py')} {url}"
+                run_command(download_cmd, shell=True)
+                converter_script = os.path.join(script_dir, "convert_gb_to_gff_advanced.py")
+            except:
+                logger.error("Could not download advanced GFF3 converter script. Using standard processing.")
+                return None
+    
+    # Generate the GFF3 file
+    gff3_path = os.path.join(output_dir, f"{accession}.gff3")
+    
+    try:
+        cmd = f"python3 {converter_script} {gb_path} {gff3_path}"
+        run_command(cmd, shell=True)
+        
+        # Verify the GFF3 file was created and is not empty
+        if os.path.exists(gff3_path) and os.path.getsize(gff3_path) > 0:
+            logger.info(f"Successfully generated custom GFF3 file: {gff3_path}")
+            return gff3_path
+        else:
+            logger.error(f"GFF3 generation failed or produced empty file")
+            return None
+    except Exception as e:
+        logger.error(f"Error generating custom GFF3: {str(e)}")
+        return None
+
 def add_genome_to_snpeff(accession: str, fasta_path: str, snpeff_jar: str, java_path: str = "java") -> bool:
     """
     Add a genome to the snpEff database.
@@ -192,9 +329,81 @@ def add_genome_to_snpeff(accession: str, fasta_path: str, snpeff_jar: str, java_
     """
     logger.info(f"Adding genome {accession} to snpEff database")
     
-    # Run snpEff build command
-    cmd = f"{java_path} -jar {snpeff_jar} build -genbank -v -noCheckProtein {accession}"
-    result = run_command(cmd, shell=True, check=False)
+    # Extract snpEff directory
+    snpeff_dir = os.path.dirname(os.path.abspath(snpeff_jar))
+    
+    # Check for genome complexity
+    needs_custom_gff = check_genome_complexity(accession, fasta_path)
+    
+    if needs_custom_gff:
+        logger.info(f"Using custom GFF3 approach for genome {accession}")
+        
+        # Generate GenBank file path
+        gb_path = fasta_path.replace(".fasta", ".gb")
+        if not os.path.exists(gb_path):
+            cmd = f"efetch -db nucleotide -id {accession} -format gb > {gb_path}"
+            run_command(cmd, shell=True)
+        
+        # Generate custom GFF3
+        temp_dir = os.path.dirname(fasta_path)
+        gff3_path = generate_custom_gff3(accession, gb_path, temp_dir)
+        
+        if not gff3_path:
+            logger.warning("Custom GFF3 generation failed, falling back to standard GenBank approach")
+            cmd = f"{java_path} -jar {snpeff_jar} build -genbank -v -noCheckProtein {accession}"
+            result = run_command(cmd, shell=True, check=False)
+        else:
+            # Set up snpEff with GFF3 and FASTA
+            data_dir = os.path.join(snpeff_dir, "data", accession)
+            os.makedirs(data_dir, exist_ok=True)
+            
+            # Copy FASTA file to snpEff data directory
+            sequences_path = os.path.join(data_dir, "sequences.fa")
+            shutil.copy2(fasta_path, sequences_path)
+            
+            # Copy GFF3 file to snpEff data directory
+            genes_path = os.path.join(data_dir, "genes.gff")
+            shutil.copy2(gff3_path, genes_path)
+            
+            # Modify snpEff.config
+            config_path = os.path.join(snpeff_dir, "snpEff.config")
+            
+            # Check if accession already exists in config
+            check_cmd = f"grep -E '^{accession}\\.genome:' {config_path}"
+            check_result = run_command(check_cmd, shell=True, check=False)
+            
+            if check_result.returncode != 0:
+                # Extract organism and strain from GenBank
+                org_cmd = f"grep -A1 'ORGANISM' {gb_path} | tail -1 | tr -d '[:space:]'"
+                org_result = run_command(org_cmd, shell=True, check=False)
+                organism = org_result.stdout.strip() if org_result.returncode == 0 else accession
+                
+                strain_cmd = f"grep -E 'strain=\"[^\"]+\"' {gb_path} | head -1 | sed 's/.*strain=\"\\([^\"]*\\)\".*/\\1/'"
+                strain_result = run_command(strain_cmd, shell=True, check=False)
+                strain = strain_result.stdout.strip() if strain_result.returncode == 0 else ""
+                
+                # Create abbreviated name
+                abbr_name = accession
+                if strain:
+                    # Extract first letters of each word in organism
+                    organism_abbr = ''.join([word[0].upper() for word in organism.split() if word[0].isalpha()])
+                    abbr_name = f"{organism_abbr}-{strain}"
+                
+                # Add to config
+                with open(config_path, 'a') as f:
+                    f.write(f"\n# {accession}\n")
+                    f.write(f"{accession}.genome: {abbr_name}\n")
+                    f.write(f"{accession}.chromosomes: {accession}\n")
+                    f.write(f"{accession}.codonTable: Standard\n")
+            
+            # Build the database
+            cmd = f"{java_path} -jar {snpeff_jar} build -gff3 -v -noCheckProtein -noCheckCds {accession}"
+            result = run_command(cmd, shell=True, check=False)
+    else:
+        # Use standard GenBank approach
+        logger.info(f"Using standard GenBank approach for genome {accession}")
+        cmd = f"{java_path} -jar {snpeff_jar} build -genbank -v -noCheckProtein {accession}"
+        result = run_command(cmd, shell=True, check=False)
     
     # Check if build was successful
     success = result.returncode == 0

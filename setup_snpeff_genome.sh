@@ -47,9 +47,11 @@ LOCAL_CONFIG="./snpEff_${ACCESSION}.config"
 cat > "$LOCAL_CONFIG" << EOF
 # ${ACCESSION} genome configuration
 data.dir = ./data/
-${ACCESSION}.genome: ${GENOME_NAME}
-${ACCESSION}.chromosomes: ${ACCESSION}
-${ACCESSION}.codonTable: Standard
+
+# Genome ${ACCESSION}
+${ACCESSION}.genome = ${GENOME_NAME}
+${ACCESSION}.chromosomes = ${ACCESSION}
+${ACCESSION}.codonTable = Standard
 EOF
 
 echo "Created local config: $LOCAL_CONFIG"
@@ -69,35 +71,136 @@ mkdir -p "./data/${ACCESSION}"
 cp "$FASTA_FILE" "./data/${ACCESSION}/sequences.fa"
 
 # Convert GenBank to GFF3 if available
-if command -v biopython &> /dev/null || python -c "import Bio" &> /dev/null; then
+python3 -c "import Bio" 2>/dev/null
+if [ $? -eq 0 ]; then
   echo "Biopython found, generating GFF3 file..."
-  if [ -f "convert_gb_to_gff_advanced.py" ]; then
-    python3 convert_gb_to_gff_advanced.py "$GB_FILE" "./data/${ACCESSION}/genes.gff" --verbose
+  
+  # Look for converter script in shotgun_viral_genomics directory
+  CONVERTER=""
+  for script in "./convert_gb_to_gff_advanced.py" "./shotgun_viral_genomics/convert_gb_to_gff_advanced.py" "./convert_gb_to_gff_simple.py" "./shotgun_viral_genomics/convert_gb_to_gff_simple.py"; do
+    if [ -f "$script" ]; then
+      CONVERTER="$script"
+      echo "Found converter script: $CONVERTER"
+      break
+    fi
+  done
+  
+  if [ -n "$CONVERTER" ]; then
+    python3 "$CONVERTER" "$GB_FILE" "./data/${ACCESSION}/genes.gff" --verbose
   else
-    echo "convert_gb_to_gff_advanced.py not found, using simple approach..."
-    # Create a very simple GFF3 file
-    cat > "./data/${ACCESSION}/genes.gff" << EOF
-##gff-version 3
-##sequence-region ${ACCESSION} 1 10000
-${ACCESSION}\tGenBank\tregion\t1\t10000\t.\t+\t.\tID=region_1
-${ACCESSION}\tGenBank\tCDS\t1\t10000\t.\t+\t0\tID=CDS_1;Name=viral_protein;product=viral protein
+    echo "No converter script found, creating one..."
+    # Create a simple converter script
+    cat > "./convert_gb_to_gff_simple.py" << 'EOF'
+#!/usr/bin/env python3
+import sys
+import re
+from Bio import SeqIO
+
+def main():
+    if len(sys.argv) != 3:
+        print("Usage: python3 convert_gb_to_gff_simple.py input.gb output.gff3")
+        sys.exit(1)
+    
+    gb_file = sys.argv[1]
+    gff_file = sys.argv[2]
+    
+    # Read GenBank file
+    record = SeqIO.read(gb_file, "genbank")
+    
+    # Create GFF3 file
+    with open(gff_file, 'w') as out:
+        out.write('##gff-version 3\n')
+        out.write(f'##sequence-region {record.id} 1 {len(record.seq)}\n')
+        
+        # Add source feature
+        out.write(f'{record.id}\tGenBank\tregion\t1\t{len(record.seq)}\t.\t+\t.\tID=region_1\n')
+        
+        # Process features
+        feature_counter = {}
+        for feature in record.features:
+            if feature.type not in feature_counter:
+                feature_counter[feature.type] = 0
+            feature_counter[feature.type] += 1
+            
+            # Skip source feature (already added)
+            if feature.type == 'source':
+                continue
+                
+            # Start and end positions (1-based for GFF)
+            start = int(feature.location.start) + 1
+            end = int(feature.location.end)
+            
+            # Strand
+            strand = '+' if feature.location.strand == 1 else '-'
+            
+            # Phase for CDS features
+            phase = '0'
+            if feature.type == 'CDS' and 'codon_start' in feature.qualifiers:
+                phase = str(int(feature.qualifiers['codon_start'][0]) - 1)
+            else:
+                phase = '.'
+            
+            # Create ID
+            feature_id = f"{feature.type.lower()}_{feature_counter[feature.type]}"
+            if feature.type == 'CDS' and 'product' in feature.qualifiers:
+                product = feature.qualifiers['product'][0]
+                clean_product = re.sub(r'[^\w\s]', '', product).replace(' ', '_')
+                feature_id = f"{clean_product}_{feature_counter[feature.type]}"
+            
+            # Create attributes
+            attributes = [f"ID={feature_id}"]
+            
+            # Add Name and product if available
+            if 'product' in feature.qualifiers:
+                product = feature.qualifiers['product'][0]
+                attributes.append(f"Name={product}")
+                attributes.append(f"product={product}")
+            
+            # Add other qualifiers
+            for key, values in feature.qualifiers.items():
+                if key not in ['product'] and key != 'translation':
+                    for value in values:
+                        value = value.replace(';', '%3B').replace('=', '%3D')
+                        attributes.append(f"{key}={value}")
+            
+            # Write the feature
+            out.write(f'{record.id}\tGenBank\t{feature.type}\t{start}\t{end}\t.\t{strand}\t{phase}\t{";".join(attributes)}\n')
+        
+        # Add sequence
+        out.write('##FASTA\n')
+        out.write(f'>{record.id}\n')
+        seq_str = str(record.seq)
+        for i in range(0, len(seq_str), 60):
+            out.write(seq_str[i:i+60] + '\n')
+
+if __name__ == "__main__":
+    main()
 EOF
+    
+    chmod +x "./convert_gb_to_gff_simple.py"
+    python3 "./convert_gb_to_gff_simple.py" "$GB_FILE" "./data/${ACCESSION}/genes.gff"
   fi
 else
   echo "Biopython not found, creating simple GFF3 file..."
+  # Get sequence length from FASTA file
+  SEQ_LENGTH=$(grep -v "^>" "$FASTA_FILE" | tr -d '\n' | wc -c)
+  if [ -z "$SEQ_LENGTH" ] || [ "$SEQ_LENGTH" -eq 0 ]; then
+    SEQ_LENGTH=10000
+  fi
+  
   # Create a very simple GFF3 file
   cat > "./data/${ACCESSION}/genes.gff" << EOF
 ##gff-version 3
-##sequence-region ${ACCESSION} 1 10000
-${ACCESSION}\tGenBank\tregion\t1\t10000\t.\t+\t.\tID=region_1
-${ACCESSION}\tGenBank\tCDS\t1\t10000\t.\t+\t0\tID=CDS_1;Name=viral_protein;product=viral protein
+##sequence-region ${ACCESSION} 1 ${SEQ_LENGTH}
+${ACCESSION}\tGenBank\tregion\t1\t${SEQ_LENGTH}\t.\t+\t.\tID=region_1
+${ACCESSION}\tGenBank\tCDS\t1\t${SEQ_LENGTH}\t.\t+\t0\tID=CDS_1;Name=viral_protein;product=viral protein
 EOF
 fi
 
 # Build the database
 echo "Building snpEff database..."
 export SNPEFF_CONFIG="$LOCAL_CONFIG"
-java -jar "$SNPEFF_JAR" build -gff3 -v -noCheckProtein -noCheckCds -noLog -treatAllAsProteinCoding "$ACCESSION"
+java -jar "$SNPEFF_JAR" build -gff3 -v -noCheckProtein -noCheckCds -noLog "$ACCESSION"
 
 # Verify the database was built
 if [ $? -eq 0 ]; then

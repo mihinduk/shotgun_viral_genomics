@@ -57,6 +57,7 @@ def parse_args() -> argparse.Namespace:
     pipeline_group.add_argument("--skip-mapping", action="store_true", help="Skip read mapping step")
     pipeline_group.add_argument("--skip-variants", action="store_true", help="Skip variant calling step")
     pipeline_group.add_argument("--skip-annotation", action="store_true", help="Skip variant annotation step")
+    pipeline_group.add_argument("--create-genbank", action="store_true", help="Create GenBank file from FASTA using BLAST annotation")
     
     # Output options
     output_group = parser.add_argument_group("Output")
@@ -73,6 +74,11 @@ def parse_args() -> argparse.Namespace:
     snpeff_group.add_argument("--add-to-snpeff", action="store_true", help="Attempt to add genome to snpEff if not present")
     snpeff_group.add_argument("--snpeff-jar", default="snpEff.jar", help="Path to snpEff.jar")
     snpeff_group.add_argument("--java-path", default="java", help="Path to Java executable")
+    
+    # BLAST options for GenBank creation
+    blast_group = parser.add_argument_group("BLAST Options (for GenBank creation)")
+    blast_group.add_argument("--blast-db", default="nt", help="BLAST database to use for GenBank creation")
+    blast_group.add_argument("--email", help="Email for NCBI Entrez queries (required for GenBank creation)")
     
     return parser.parse_args()
 

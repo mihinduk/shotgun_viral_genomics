@@ -41,8 +41,8 @@ cd shotgun_viral_genomics
 ```bash
 # Create a conda environment
 conda create -n viral_genomics -c bioconda -c conda-forge \
-  seqkit=2.0.0 fastp=0.22.0 bwa=0.7.17 samtools=1.18 lofreq=2.1.5 \
-  perl=5.32.1 entrez-direct python=3.9 numpy pandas
+    seqkit=2.0.0 fastp=0.22.0 bwa=0.7.17 samtools=1.18 lofreq=2.1.5 \
+    perl=5.32.1 entrez-direct python=3.9 numpy pandas biopython requests
 conda activate viral_genomics
 
 # Make scripts executable

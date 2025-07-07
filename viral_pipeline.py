@@ -151,7 +151,7 @@ def run_command(cmd: Union[str, List[str]], shell: bool = False, check: bool = T
         shell=shell, 
         stdout=subprocess.PIPE, 
         stderr=subprocess.PIPE,
-        text=True,
+        universal_newlines=True,
         check=False
     )
     
@@ -767,7 +767,7 @@ def map_and_call_variants(
         # 2. Fix mate information
         logger.info(f"Fixing mate information for {sample_name}")
         run_command(
-            f"samtools fixmate -O bam,level=1 -m --threads {threads} {sam_file} {fixmate_file}",
+            f"samtools fixmate -O bam -m --threads {threads} {sam_file} {fixmate_file}",
             shell=True
         )
         

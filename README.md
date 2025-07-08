@@ -79,6 +79,7 @@ conda activate viral_genomics
 - `--threads`: Number of CPU threads to use (default: 1)
 - `--outdir`: Output directory (default: current directory)
 - `--min-depth`: Minimum read depth for final variant reporting (default: 200)
+- `--large-files`: Enable high-memory mode for samples with high coverage or complex alignments (see Performance Optimization section)
 
 ### Advanced Parameters
 
@@ -158,6 +159,35 @@ conda activate viral_genomics
 ```bash
 ./viral_pipeline.py --r1 sample_R1.fastq.gz --r2 sample_R2.fastq.gz --accession AF253419.1 --add-to-snpeff --threads 8
 ```
+
+## Performance Optimization
+
+### High-Memory Mode (--large-files)
+
+The `--large-files` flag should be used when processing samples that require more memory than the default settings provide. This is particularly important for:
+
+1. **High-coverage samples** - When sequencing depth is exceptionally high
+2. **Complex alignments** - Samples with high variant density or structural complexity
+3. **Large input files** - While file size alone isn't always indicative, files >5GB may benefit
+
+**What it does:**
+- Increases Java heap memory for SnpEff from 4GB to 16GB
+- Adds memory parameters to samtools sort operations (4GB per thread)
+- Optimizes memory usage for resource-intensive steps
+
+**When to use it:**
+- If the pipeline fails with exit code 137 (out of memory)
+- When processing samples with >1000x average coverage
+- For samples known to have high complexity or variant density
+
+**Example:**
+```bash
+# Enable high-memory mode for complex samples
+./viral_pipeline.py --r1 sample_R1.fastq.gz --r2 sample_R2.fastq.gz \
+    --accession KU955591.1 --threads 4 --large-files
+```
+
+**Note:** Ensure your system has sufficient available memory (at least 20GB) when using this flag.
 
 ## Common Issues
 

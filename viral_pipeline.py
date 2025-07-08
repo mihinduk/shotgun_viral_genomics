@@ -68,6 +68,7 @@ def parse_args() -> argparse.Namespace:
     # Performance options
     perf_group = parser.add_argument_group("Performance")
     perf_group.add_argument("--threads", type=int, default=1, help="Number of CPU threads to use")
+    perf_group.add_argument("--large-files", action="store_true", help="Enable high-memory mode for large files (>5GB). Increases Java heap to 16GB and optimizes memory usage for resource-intensive operations.")
     
     # SnpEff options
     snpeff_group = parser.add_argument_group("SnpEff")
@@ -698,7 +699,8 @@ def map_and_call_variants(
     reference: str, 
     output_dir: str, 
     threads: int = 1,
-    cleaned_files: Dict[str, Tuple[str, str]] = None
+    cleaned_files: Dict[str, Tuple[str, str]] = None,
+    large_files: bool = False
 ) -> Dict[str, Dict[str, str]]:
     """
     Map reads to reference and call variants.
@@ -789,8 +791,10 @@ def map_and_call_variants(
         
         # 3. Sort BAM
         logger.info(f"Sorting BAM file for {sample_name}")
+        # Use more memory for large files
+        sort_mem = "-m 4G" if large_files else ""
         run_command(
-            f"samtools sort --threads {threads} -O bam {fixmate_file} > {bam_file}",
+            f"samtools sort {sort_mem} --threads {threads} -O bam {fixmate_file} > {bam_file}",
             shell=True
         )
         
@@ -804,14 +808,14 @@ def map_and_call_variants(
         # 5. LoFreq Viterbi realignment
         logger.info(f"LoFreq Viterbi realignment for {sample_name}")
         run_command(
-            f"lofreq viterbi -f {reference} {dedupe_file} | samtools sort - --threads {threads} > {realign_file}",
+            f"lofreq viterbi -f {reference} {dedupe_file} | samtools sort - {sort_mem} --threads {threads} > {realign_file}",
             shell=True
         )
         
         # 6. LoFreq indel quality calibration
         logger.info(f"LoFreq indel quality calibration for {sample_name}")
         run_command(
-            f"lofreq indelqual --dindel -f {reference} {realign_file} | samtools sort - --threads {threads} > {indel_file}",
+            f"lofreq indelqual --dindel -f {reference} {realign_file} | samtools sort - {sort_mem} --threads {threads} > {indel_file}",
             shell=True
         )
         
@@ -908,7 +912,7 @@ def filter_variants(variants_dir: str, specific_files: Dict[str, Dict[str, str]]
     logger.info(f"Variant filtering completed for {len(filtered_files)} samples")
     return filtered_files
 
-def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_path: str = "java", specific_files: Dict[str, str] = None) -> Dict[str, Dict[str, str]]:
+def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_path: str = "java", specific_files: Dict[str, str] = None, large_files: bool = False) -> Dict[str, Dict[str, str]]:
     """
     Annotate filtered variants using snpEff.
     
@@ -1004,7 +1008,9 @@ def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_p
         shutil.copy2(filt_path, safe_filt_path)
 
         # Run snpEff with more robust error handling and debug output
-        cmd = f"{java_path} -jar -Xmx4g {snpeff_jar} -v {accession} {safe_filt_path} -s {summary_html} > {ann_vcf}"
+        # Use higher memory for large files
+        java_mem = "-Xmx16g" if large_files else "-Xmx4g"
+        cmd = f"{java_path} -jar {java_mem} {snpeff_jar} -v {accession} {safe_filt_path} -s {summary_html} > {ann_vcf}"
         logger.info(f"Running command: {cmd}")
         
         try:
@@ -1042,7 +1048,7 @@ def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_p
                         logger.info(f"Filtered VCF now has {aggressive_count} variants (originally {variant_count_in_input})")
                         
                         # Try snpEff with the more aggressively filtered file
-                        retry_cmd = f"{java_path} -jar -Xmx4g {snpeff_jar} -v {accession} {filtered_tmp} -s {summary_html} > {ann_vcf}"
+                        retry_cmd = f"{java_path} -jar {java_mem} {snpeff_jar} -v {accession} {filtered_tmp} -s {summary_html} > {ann_vcf}"
                         try:
                             logger.info(f"Retrying with aggressively filtered VCF: {retry_cmd}")
                             run_command(retry_cmd, shell=True)
@@ -1320,7 +1326,8 @@ def main():
                 reference_path, 
                 cleaned_dir, 
                 args.threads,
-                cleaned_files  # Pass the specific cleaned files
+                cleaned_files,  # Pass the specific cleaned files
+                args.large_files
             )
         
         # Step 5: Filter variants
@@ -1331,7 +1338,7 @@ def main():
         # Step 6: Annotate variants
         if not args.skip_annotation and accession:
             variants_dir = os.path.join(cleaned_dir, "variants")
-            annotation_files = annotate_variants(variants_dir, accession, args.snpeff_jar, args.java_path, filtered_files)
+            annotation_files = annotate_variants(variants_dir, accession, args.snpeff_jar, args.java_path, filtered_files, args.large_files)
             
             # Step 7: Parse annotations
             parsed_files = parse_annotations(variants_dir, args.min_depth, annotation_files)

@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import List, Optional, Dict, Union, Any
+from typing import List, Optional, Dict, Union, Any, Tuple
 import glob  # Added for glob file pattern support
 
 __version__ = "0.1.0"
@@ -697,7 +697,8 @@ def clean_reads(output_dir: str, r1_pattern: str, r2_pattern: str, threads: int 
 def map_and_call_variants(
     reference: str, 
     output_dir: str, 
-    threads: int = 1
+    threads: int = 1,
+    cleaned_files: Dict[str, Tuple[str, str]] = None
 ) -> Dict[str, Dict[str, str]]:
     """
     Map reads to reference and call variants.
@@ -706,6 +707,7 @@ def map_and_call_variants(
         reference: Path to reference genome
         output_dir: Base output directory
         threads: Number of threads to use
+        cleaned_files: Dictionary mapping sample names to (R1, R2) cleaned file paths
         
     Returns:
         Dictionary mapping sample names to output files
@@ -722,21 +724,35 @@ def map_and_call_variants(
     logger.info(f"Indexing reference genome: {reference}")
     run_command(f"bwa index {reference}", shell=True)
     
-    # Get cleaned R1 files (using standardized naming)
-    r1_files = [f for f in os.listdir(output_dir) if f.endswith('_R1.qc.fastq.gz')]
-    
-    if not r1_files:
-        raise FileNotFoundError(f"No cleaned R1 files found in {output_dir}")
+    # If cleaned_files provided, use those; otherwise find all in directory
+    if cleaned_files:
+        # Use the specific cleaned files provided
+        files_to_process = cleaned_files
+    else:
+        # Legacy behavior: find all cleaned files in directory
+        r1_files = [f for f in os.listdir(output_dir) if f.endswith('_R1.qc.fastq.gz')]
+        
+        if not r1_files:
+            raise FileNotFoundError(f"No cleaned R1 files found in {output_dir}")
+        
+        files_to_process = {}
+        for r1_file in r1_files:
+            sample_name = r1_file.replace('_R1.qc.fastq.gz', '')
+            r2_file = r1_file.replace('_R1', '_R2')
+            r1_path = os.path.join(output_dir, r1_file)
+            r2_path = os.path.join(output_dir, r2_file)
+            files_to_process[sample_name] = (r1_path, r2_path)
     
     result_files = {}
     
-    for r1_file in r1_files:
-        # Extract sample name
-        sample_name = r1_file.replace('_R1.qc.fastq.gz', '')
-        r2_file = r1_file.replace('_R1', '_R2')
-        
-        r1_path = os.path.join(output_dir, r1_file)
-        r2_path = os.path.join(output_dir, r2_file)
+    # Process each sample
+    for sample_name, file_info in files_to_process.items():
+        # Handle both tuple and dict formats
+        if isinstance(file_info, tuple):
+            r1_path, r2_path = file_info
+        else:
+            r1_path = file_info['r1_out']
+            r2_path = file_info['r2_out']
         
         if not os.path.exists(r2_path):
             logger.warning(f"No matching R2 file found for {r1_path}")
@@ -839,23 +855,31 @@ def map_and_call_variants(
     logger.info(f"Mapping and variant calling completed for {len(result_files)} samples")
     return result_files
 
-def filter_variants(variants_dir: str) -> Dict[str, str]:
+def filter_variants(variants_dir: str, specific_files: Dict[str, Dict[str, str]]) -> Dict[str, str]:
     """
     Filter variant calls from LoFreq.
     
     Args:
         variants_dir: Directory containing variant files
+        specific_files: Dictionary of specific files to filter (from variant calling step) - REQUIRED
         
     Returns:
         Dictionary mapping sample names to filtered variant files
     """
     logger.info("Filtering variant calls")
     
-    # Get VCF files
-    vcf_files = [f for f in os.listdir(variants_dir) if f.endswith('_vars.vcf')]
+    if not specific_files:
+        raise ValueError("specific_files parameter is required - cannot process all files in directory")
+    
+    # Use only the specific files from the current run
+    vcf_files = []
+    for sample_name, file_info in specific_files.items():
+        if 'vars' in file_info:
+            vcf_filename = os.path.basename(file_info['vars'])
+            vcf_files.append(vcf_filename)
     
     if not vcf_files:
-        raise FileNotFoundError(f"No variant VCF files found in {variants_dir}")
+        raise FileNotFoundError(f"No variant VCF files found in specific_files for {variants_dir}")
     
     filtered_files = {}
     
@@ -884,7 +908,7 @@ def filter_variants(variants_dir: str) -> Dict[str, str]:
     logger.info(f"Variant filtering completed for {len(filtered_files)} samples")
     return filtered_files
 
-def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_path: str = "java") -> Dict[str, Dict[str, str]]:
+def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_path: str = "java", specific_files: Dict[str, str] = None) -> Dict[str, Dict[str, str]]:
     """
     Annotate filtered variants using snpEff.
     
@@ -893,17 +917,24 @@ def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_p
         accession: Reference genome accession
         snpeff_jar: Path to snpEff.jar
         java_path: Path to Java executable
+        specific_files: Dictionary of specific filtered files to annotate (from filter step) - REQUIRED
         
     Returns:
         Dictionary mapping sample names to annotation files
     """
     logger.info(f"Annotating variants with snpEff using database: {accession}")
     
-    # Get filtered VCF files
-    filt_files = [f for f in os.listdir(variants_dir) if f.endswith('_vars.filt.vcf')]
+    if not specific_files:
+        raise ValueError("specific_files parameter is required - cannot process all files in directory")
+    
+    # Use only the specific files from the current run
+    filt_files = []
+    for sample_name, filtered_path in specific_files.items():
+        filt_filename = os.path.basename(filtered_path)
+        filt_files.append(filt_filename)
     
     if not filt_files:
-        raise FileNotFoundError(f"No filtered variant VCF files found in {variants_dir}")
+        raise FileNotFoundError(f"No filtered variant VCF files found in specific_files for {variants_dir}")
     
     # Verify snpEff database has the genome
     verify_cmd = f"{java_path} -jar {snpeff_jar} databases | grep -i {accession}"
@@ -1129,24 +1160,32 @@ def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_p
     logger.info(f"Variant annotation completed for {len(annotation_files)} samples")
     return annotation_files
 
-def parse_annotations(variants_dir: str, min_depth: int) -> Dict[str, str]:
+def parse_annotations(variants_dir: str, min_depth: int, specific_files: Dict[str, Dict[str, str]]) -> Dict[str, str]:
     """
     Parse annotated variants using the Perl script.
     
     Args:
         variants_dir: Directory containing annotation files
         min_depth: Minimum read depth for reporting
+        specific_files: Dictionary of specific annotation files to parse (from annotation step) - REQUIRED
         
     Returns:
         Dictionary mapping sample names to parsed annotation files
     """
     logger.info(f"Parsing annotated variants with minimum depth {min_depth}")
     
-    # Get annotation TSV files
-    ann_files = [f for f in os.listdir(variants_dir) if f.endswith('.snpEFF.ann.tsv')]
+    if not specific_files:
+        raise ValueError("specific_files parameter is required - cannot process all files in directory")
+    
+    # Use only the specific files from the current run
+    ann_files = []
+    for sample_name, file_info in specific_files.items():
+        if 'ann_tsv' in file_info:
+            ann_filename = os.path.basename(file_info['ann_tsv'])
+            ann_files.append(ann_filename)
     
     if not ann_files:
-        raise FileNotFoundError(f"No annotation TSV files found in {variants_dir}")
+        raise FileNotFoundError(f"No annotation TSV files found in specific_files for {variants_dir}")
     
     parsed_files = {}
     
@@ -1280,21 +1319,22 @@ def main():
             variant_files = map_and_call_variants(
                 reference_path, 
                 cleaned_dir, 
-                args.threads
+                args.threads,
+                cleaned_files  # Pass the specific cleaned files
             )
         
         # Step 5: Filter variants
         if not args.skip_variants:
             variants_dir = os.path.join(cleaned_dir, "variants")
-            filtered_files = filter_variants(variants_dir)
+            filtered_files = filter_variants(variants_dir, variant_files)
         
         # Step 6: Annotate variants
         if not args.skip_annotation and accession:
             variants_dir = os.path.join(cleaned_dir, "variants")
-            annotation_files = annotate_variants(variants_dir, accession, args.snpeff_jar, args.java_path)
+            annotation_files = annotate_variants(variants_dir, accession, args.snpeff_jar, args.java_path, filtered_files)
             
             # Step 7: Parse annotations
-            parsed_files = parse_annotations(variants_dir, args.min_depth)
+            parsed_files = parse_annotations(variants_dir, args.min_depth, annotation_files)
         
         logger.info("Pipeline completed successfully")
         

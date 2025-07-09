@@ -171,8 +171,8 @@ The `--large-files` flag should be used when processing samples that require mor
 3. **Large input files** - While file size alone isn't always indicative, files >5GB may benefit
 
 **What it does:**
-- Increases Java heap memory for SnpEff from 4GB to 16GB
-- Adds memory parameters to samtools sort operations (4GB per thread)
+- Increases Java heap memory for SnpEff from 4GB to 32GB
+- Adds memory parameters to samtools sort operations (8GB per thread)
 - Optimizes memory usage for resource-intensive steps
 
 **When to use it:**
@@ -187,7 +187,74 @@ The `--large-files` flag should be used when processing samples that require mor
     --accession KU955591.1 --threads 4 --large-files
 ```
 
-**Note:** Ensure your system has sufficient available memory (at least 20GB) when using this flag.
+**Note:** Ensure your system has sufficient available memory (at least 40GB free) when using this flag with 4 threads.
+
+## Troubleshooting
+
+### No Variants Found or Poor Mapping
+
+If your pipeline completes but finds zero variants or very few variants, use the troubleshooting module to diagnose the issue:
+
+```bash
+# Quick diagnosis of mapping and variant issues
+python troubleshoot_pipeline.py --sample-dir /path/to/sample --full-diagnosis
+
+# Check mapping statistics only
+python troubleshoot_pipeline.py --sample-dir /path/to/sample --check-mapping
+
+# Assembly-based organism identification
+python troubleshoot_pipeline.py --r1 cleaned_R1.fq.gz --r2 cleaned_R2.fq.gz --assembly-diagnosis
+```
+
+**What the troubleshooting module does:**
+1. **Checks mapping statistics** - identifies poor mapping rates
+2. **Analyzes variant files** - counts variants and shows examples
+3. **Runs de novo assembly** - assembles reads without reference bias
+4. **BLASTs contigs** - identifies the actual organism in your sample
+5. **Suggests correct reference genomes** - based on BLAST results
+
+**Common causes of zero variants:**
+- **Wrong reference genome** - your sample is a different organism
+- **Perfect reference match** - clonal sample with no mutations
+- **Low coverage** - insufficient sequencing depth
+- **Mixed infections** - multiple organisms in same sample
+- **Sample contamination** - host DNA or other contaminants
+
+### Example: Mixed Viral Infection
+
+```bash
+# Run troubleshooting on a problematic sample
+python troubleshoot_pipeline.py --sample-dir /path/to/sample --full-diagnosis
+
+# Output will show:
+# - Poor mapping to reference (e.g., <5% mapped reads)
+# - Zero or very few variants
+# - Assembly contigs that BLAST to different organisms
+# - Suggested reference genomes for each organism found
+```
+
+**If multiple organisms are found:**
+1. Choose the most abundant organism (highest contig coverage)
+2. Rerun pipeline with the correct reference genome
+3. Consider analyzing each organism separately
+
+### Assembly-Based Organism Identification
+
+When reference-based approaches fail, use de novo assembly:
+
+```bash
+# Using MEGAHIT for viral assembly
+megahit -1 cleaned_R1.fq.gz -2 cleaned_R2.fq.gz -o assembly_results \
+    --presets meta-sensitive --min-contig-len 500 -t 4
+
+# BLAST the contigs for identification
+blastn -query assembly_results/final.contigs.fa -db nt -remote \
+    -outfmt "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore stitle" \
+    -max_target_seqs 20 -max_hsps 1 > blast_results.tsv
+
+# Analyze results to find the correct organism
+cut -f13 blast_results.tsv | sort | uniq -c | sort -nr | head -10
+```
 
 ## Common Issues
 

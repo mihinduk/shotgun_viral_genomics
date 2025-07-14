@@ -3,10 +3,8 @@
 
 # Check arguments
 if [ $# -lt 3 ]; then
-    echo "Usage: $0 <R1_fastq> <R2_fastq> <accession> [threads] [--large-files|--extremely-large-files]"
+    echo "Usage: $0 <R1_fastq> <R2_fastq> <accession> [threads]"
     echo "Example: $0 sample_R1.fastq.gz sample_R2.fastq.gz GQ433359.1 4"
-    echo "Example: $0 sample_R1.fastq.gz sample_R2.fastq.gz GQ433359.1 4 --large-files"
-    echo "Example: $0 sample_R1.fastq.gz sample_R2.fastq.gz GQ433359.1 4 --extremely-large-files"
     echo ""
     echo "This script will:"
     echo "  1. Check if snpEff database exists for the accession"
@@ -20,20 +18,6 @@ R1=$1
 R2=$2
 ACCESSION=$3
 THREADS=${4:-4}  # Default to 4 threads if not specified
-LARGE_FILES_FLAG=""
-
-# Check if memory flags are provided (can be in position 4 or 5)
-if [ $# -ge 4 ] && [ "$4" == "--large-files" ]; then
-    LARGE_FILES_FLAG="--large-files"
-    THREADS=4  # Reset to default since flag was in threads position
-elif [ $# -ge 4 ] && [ "$4" == "--extremely-large-files" ]; then
-    LARGE_FILES_FLAG="--extremely-large-files"
-    THREADS=4  # Reset to default since flag was in threads position
-elif [ $# -ge 5 ] && [ "$5" == "--large-files" ]; then
-    LARGE_FILES_FLAG="--large-files"
-elif [ $# -ge 5 ] && [ "$5" == "--extremely-large-files" ]; then
-    LARGE_FILES_FLAG="--extremely-large-files"
-fi
 
 # Set up environment - use mamba run instead of activate
 echo "Setting up HTCF environment..."
@@ -61,7 +45,6 @@ echo "  R1: $R1"
 echo "  R2: $R2"
 echo "  Accession: $ACCESSION"
 echo "  Threads: $THREADS"
-echo "  Memory mode: $(if [ "$LARGE_FILES_FLAG" == "--extremely-large-files" ]; then echo "extreme (256GB)"; elif [ "$LARGE_FILES_FLAG" == "--large-files" ]; then echo "large (64GB)"; else echo "standard (32GB)"; fi)"
 echo "  Working directory: $(pwd)"
 
 # Function to build snpEff database
@@ -159,25 +142,13 @@ fi
 echo "Running the viral pipeline..."
 
 # Run the pipeline without --add-to-snpeff since we handled it above
-if [ -n "$LARGE_FILES_FLAG" ]; then
-    echo "Using $LARGE_FILES_FLAG for increased memory allocation"
-    $MAMBA_CMD python ${PIPELINE_DIR}/viral_pipeline.py \
-        --r1 "$R1" \
-        --r2 "$R2" \
-        --accession "$ACCESSION" \
-        --threads $THREADS \
-        --snpeff-jar "$SNPEFF_JAR" \
-        --java-path "$JAVA_PATH" \
-        --large-files
-else
-    $MAMBA_CMD python ${PIPELINE_DIR}/viral_pipeline.py \
-        --r1 "$R1" \
-        --r2 "$R2" \
-        --accession "$ACCESSION" \
-        --threads $THREADS \
-        --snpeff-jar "$SNPEFF_JAR" \
-        --java-path "$JAVA_PATH"
-fi
+$MAMBA_CMD python ${PIPELINE_DIR}/viral_pipeline.py \
+    --r1 "$R1" \
+    --r2 "$R2" \
+    --accession "$ACCESSION" \
+    --threads $THREADS \
+    --snpeff-jar "$SNPEFF_JAR" \
+    --java-path "$JAVA_PATH"
 
 PIPELINE_EXIT_CODE=$?
 
@@ -185,17 +156,13 @@ if [ $PIPELINE_EXIT_CODE -eq 0 ]; then
     echo ""
     echo "Pipeline completed successfully!"
     echo ""
-    
-    # Extract sample name from R1 filename to only show files for current sample
-    SAMPLE_NAME=$(basename "$R1" | sed 's/_R1\.fastq\.gz$//' | sed 's/_R1\.qc\.fastq\.gz$//')
-    
     echo "Output files:"
-    find ./cleaned_seqs/variants -name "*${SAMPLE_NAME}*.tsv" -o -name "*${SAMPLE_NAME}*.vcf" 2>/dev/null | sort
+    find ./cleaned_seqs/variants -name "*.tsv" -o -name "*.vcf" 2>/dev/null | sort
     echo ""
     echo "Key results:"
-    if ls ./cleaned_seqs/variants/*${SAMPLE_NAME}*.snpEFF.ann.tsv >/dev/null 2>&1; then
-        echo "  Annotation TSV: $(ls ./cleaned_seqs/variants/*${SAMPLE_NAME}*.snpEFF.ann.tsv | head -1)"
-        echo "  Total annotated variants: $(wc -l < $(ls ./cleaned_seqs/variants/*${SAMPLE_NAME}*.snpEFF.ann.tsv | head -1))"
+    if ls ./cleaned_seqs/variants/*snpEFF.ann.tsv >/dev/null 2>&1; then
+        echo "  Annotation TSV: $(ls ./cleaned_seqs/variants/*snpEFF.ann.tsv | head -1)"
+        echo "  Total annotated variants: $(wc -l < $(ls ./cleaned_seqs/variants/*snpEFF.ann.tsv | head -1))"
     fi
 else
     echo "Pipeline failed with exit code $PIPELINE_EXIT_CODE"

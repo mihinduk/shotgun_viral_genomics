@@ -1,0 +1,6 @@
+#!/bin/bash
+# Wrapper script for QC visualization report generation
+# Usage: run_qc_report diagnostic_SMS_10 diagnostic_SMS_11 -o combined_report
+
+SCRIPT_DIR="/scratch/sahlab/kathie/Diamond_test/shotgun_viral_genomics"
+python "${SCRIPT_DIR}/qc_with_simple_plots.py" "$@"

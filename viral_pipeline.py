@@ -68,7 +68,8 @@ def parse_args() -> argparse.Namespace:
     # Performance options
     perf_group = parser.add_argument_group("Performance")
     perf_group.add_argument("--threads", type=int, default=1, help="Number of CPU threads to use")
-    perf_group.add_argument("--large-files", action="store_true", help="Enable high-memory mode for large files (>5GB). Increases Java heap to 16GB and optimizes memory usage for resource-intensive operations.")
+    perf_group.add_argument("--large-files", action="store_true", help="Enable high-memory mode for large files (1-5GB). Increases Java heap to 32GB and uses 8GB per thread for sorting.")
+    perf_group.add_argument("--extremely-large-files", action="store_true", help="Enable extreme high-memory mode for massive files (>5GB). Increases Java heap to 64GB and uses 32GB per thread for sorting. Requires high-memory compute nodes.")
     
     # SnpEff options
     snpeff_group = parser.add_argument_group("SnpEff")
@@ -700,7 +701,8 @@ def map_and_call_variants(
     output_dir: str, 
     threads: int = 1,
     cleaned_files: Dict[str, Tuple[str, str]] = None,
-    large_files: bool = False
+    large_files: bool = False,
+    extremely_large_files: bool = False
 ) -> Dict[str, Dict[str, str]]:
     """
     Map reads to reference and call variants.
@@ -775,38 +777,68 @@ def map_and_call_variants(
         
         # Alignment steps
         
-        # 1. BWA MEM alignment
-        logger.info(f"Aligning reads for {sample_name}")
-        run_command(
-            f"bwa mem -t {threads} {reference} {r1_path} {r2_path} > {sam_file}",
-            shell=True
-        )
-        
-        # 2. Fix mate information
-        logger.info(f"Fixing mate information for {sample_name}")
-        run_command(
-            f"samtools fixmate -O bam -m --threads {threads} {sam_file} {fixmate_file}",
-            shell=True
-        )
-        
-        # 3. Sort BAM
-        logger.info(f"Sorting BAM file for {sample_name}")
-        # Use more memory for large files
-        sort_mem = "-m 4G" if large_files else ""
-        run_command(
-            f"samtools sort {sort_mem} --threads {threads} -O bam {fixmate_file} > {bam_file}",
-            shell=True
-        )
-        
-        # 4. Mark duplicates
-        logger.info(f"Marking duplicates for {sample_name}")
-        run_command(
-            f"samtools markdup --threads {threads} -S {bam_file} {dedupe_file}",
-            shell=True
-        )
+        # Check if we should use streaming for extremely large files
+        if extremely_large_files:
+            # Stream everything to avoid intermediate files for extremely large datasets
+            logger.info(f"Using streaming pipeline for extremely large files - {sample_name}")
+            sort_mem = "-m 32G"  # 32GB per thread for extremely large files
+            
+            # Create a single piped command: align -> fixmate -> sort -> markdup
+            logger.info(f"Running streaming alignment pipeline for {sample_name}")
+            streaming_cmd = (
+                f"bwa mem -t {threads} {reference} {r1_path} {r2_path} | "
+                f"samtools fixmate -m -O bam --threads {threads} - - | "
+                f"samtools sort {sort_mem} --threads {threads} -O bam - | "
+                f"samtools markdup --threads {threads} -S - {dedupe_file}"
+            )
+            run_command(streaming_cmd, shell=True)
+            
+            # For compatibility, create sorted bam reference
+            bam_file = dedupe_file
+            
+        else:
+            # Original non-streaming approach for normal files
+            # 1. BWA MEM alignment
+            logger.info(f"Aligning reads for {sample_name}")
+            run_command(
+                f"bwa mem -t {threads} {reference} {r1_path} {r2_path} > {sam_file}",
+                shell=True
+            )
+            
+            # 2. Fix mate information
+            logger.info(f"Fixing mate information for {sample_name}")
+            run_command(
+                f"samtools fixmate -O bam -m --threads {threads} {sam_file} {fixmate_file}",
+                shell=True
+            )
+            
+            # 3. Sort BAM
+            logger.info(f"Sorting BAM file for {sample_name}")
+            # Use more memory for large files
+            if large_files:
+                sort_mem = "-m 8G"   # 8GB per thread for large files
+            else:
+                sort_mem = ""        # Default for normal files
+            run_command(
+                f"samtools sort {sort_mem} --threads {threads} -O bam {fixmate_file} > {bam_file}",
+                shell=True
+            )
+            
+            # 4. Mark duplicates
+            logger.info(f"Marking duplicates for {sample_name}")
+            run_command(
+                f"samtools markdup --threads {threads} -S {bam_file} {dedupe_file}",
+                shell=True
+            )
         
         # 5. LoFreq Viterbi realignment
         logger.info(f"LoFreq Viterbi realignment for {sample_name}")
+        if extremely_large_files:
+            sort_mem = "-m 32G"  # Already set above
+        elif large_files:
+            sort_mem = "-m 8G"
+        else:
+            sort_mem = ""
         run_command(
             f"lofreq viterbi -f {reference} {dedupe_file} | samtools sort - {sort_mem} --threads {threads} > {realign_file}",
             shell=True
@@ -912,7 +944,7 @@ def filter_variants(variants_dir: str, specific_files: Dict[str, Dict[str, str]]
     logger.info(f"Variant filtering completed for {len(filtered_files)} samples")
     return filtered_files
 
-def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_path: str = "java", specific_files: Dict[str, str] = None, large_files: bool = False) -> Dict[str, Dict[str, str]]:
+def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_path: str = "java", specific_files: Dict[str, str] = None, large_files: bool = False, extremely_large_files: bool = False) -> Dict[str, Dict[str, str]]:
     """
     Annotate filtered variants using snpEff.
     
@@ -1001,6 +1033,13 @@ def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_p
             header = "CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tEFFECT\tPUTATIVE_IMPACT\tGENE_NAME\tGENE_ID\tFEATURE_TYPE\tFEATURE_ID\tTRANSCRIPT_TYPE\tEXON_INTRON_RANK\tHGVSc\tHGVSp\tcDNA_POSITION_AND_LENGTH\tCDS_POSITION_AND_LENGTH\tPROTEIN_POSITION_AND_LENGTH\tDISTANCE_TO_FEATURE\tERROR"
             with open(ann_tsv, 'w') as f:
                 f.write(header + "\n")
+            # Add to annotation_files even for empty results
+            annotation_files[sample_name] = {
+                'ann_vcf': ann_vcf,
+                'ann_tsv': ann_tsv,
+                'summary_html': summary_html,
+                'summary_genes': summary_genes
+            }
             continue
 
         # Make a copy of the VCF file for safety
@@ -1009,7 +1048,12 @@ def annotate_variants(variants_dir: str, accession: str, snpeff_jar: str, java_p
 
         # Run snpEff with more robust error handling and debug output
         # Use higher memory for large files
-        java_mem = "-Xmx16g" if large_files else "-Xmx4g"
+        if extremely_large_files:
+            java_mem = "-Xmx64g"   # 64GB for extremely large files
+        elif large_files:
+            java_mem = "-Xmx32g"   # 32GB for large files
+        else:
+            java_mem = "-Xmx4g"    # 4GB default
         cmd = f"{java_path} -jar {java_mem} {snpeff_jar} -v {accession} {safe_filt_path} -s {summary_html} > {ann_vcf}"
         logger.info(f"Running command: {cmd}")
         
@@ -1327,7 +1371,8 @@ def main():
                 cleaned_dir, 
                 args.threads,
                 cleaned_files,  # Pass the specific cleaned files
-                args.large_files
+                args.large_files,
+                args.extremely_large_files
             )
         
         # Step 5: Filter variants
@@ -1338,7 +1383,7 @@ def main():
         # Step 6: Annotate variants
         if not args.skip_annotation and accession:
             variants_dir = os.path.join(cleaned_dir, "variants")
-            annotation_files = annotate_variants(variants_dir, accession, args.snpeff_jar, args.java_path, filtered_files, args.large_files)
+            annotation_files = annotate_variants(variants_dir, accession, args.snpeff_jar, args.java_path, filtered_files, args.large_files, args.extremely_large_files)
             
             # Step 7: Parse annotations
             parsed_files = parse_annotations(variants_dir, args.min_depth, annotation_files)

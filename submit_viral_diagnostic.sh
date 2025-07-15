@@ -41,21 +41,25 @@ echo "Job started at: $(date)"
 echo "Working directory: $(pwd)"
 echo "========================================="
 
-# Set paths
-PIPELINE_DIR="/scratch/sahlab/kathie/Diamond_test/shotgun_viral_genomics"
+# Extract pipeline directory from the original sbatch command
+# SLURM preserves the original command in the job details
+ORIGINAL_SCRIPT_PATH=$(scontrol show job $SLURM_JOB_ID | grep -oP 'Command=\K[^ ]+')
+PIPELINE_DIR="$(dirname "$ORIGINAL_SCRIPT_PATH")"
 DIAGNOSTIC_SCRIPT="${PIPELINE_DIR}/viral_diagnostic.sh"
 
-# Validate input files exist
-if [ ! -f "$R1" ]; then
-    echo "Error: R1 file not found: $R1"
+echo "Original script path: $ORIGINAL_SCRIPT_PATH"
+echo "Pipeline directory: $PIPELINE_DIR"
+echo "Diagnostic script: $DIAGNOSTIC_SCRIPT"
+
+# Verify the script exists
+if [ ! -f "$DIAGNOSTIC_SCRIPT" ]; then
+    echo "ERROR: Cannot find viral_diagnostic.sh at: $DIAGNOSTIC_SCRIPT"
+    echo "This usually means the script wasn't submitted with full path"
+    echo "Please use: sbatch /full/path/to/submit_viral_diagnostic.sh"
     exit 1
 fi
 
-if [ ! -f "$R2" ]; then
-    echo "Error: R2 file not found: $R2"
-    exit 1
-fi
-
+# Run the diagnostic script
 echo "Running viral diagnostic with:"
 echo "  R1: $R1"
 echo "  R2: $R2"
@@ -63,32 +67,16 @@ echo "  Reference: $ACCESSION"
 echo "  Sample: $SAMPLE_NAME"
 echo "  Threads: $THREADS"
 echo "  Working directory: $(pwd)"
-echo ""
 
-# Run the diagnostic script
-bash "$DIAGNOSTIC_SCRIPT" "$R1" "$R2" "$ACCESSION" "$SAMPLE_NAME" "$THREADS"
-
+# Execute the diagnostic script
+"$DIAGNOSTIC_SCRIPT" "$R1" "$R2" "$ACCESSION" "$SAMPLE_NAME" "$THREADS"
 DIAGNOSTIC_EXIT_CODE=$?
 
 echo ""
 echo "========================================="
 echo "Job completed at: $(date)"
 if [ $DIAGNOSTIC_EXIT_CODE -eq 0 ]; then
-    echo "Diagnostic analysis completed successfully!"
-    echo ""
-    echo "Key outputs:"
-    if [ -d "./diagnostic_${SAMPLE_NAME}" ]; then
-        echo "  Report: ./diagnostic_${SAMPLE_NAME}/${SAMPLE_NAME}_diagnostic_report.txt"
-        echo "  BLAST results: ./diagnostic_${SAMPLE_NAME}/${SAMPLE_NAME}_viral_blast.tsv"
-        echo "  Assembly: ./diagnostic_${SAMPLE_NAME}/assembly_${SAMPLE_NAME}/final.contigs.fa"
-        echo ""
-        
-        # Show quick summary if report exists
-        if [ -f "./diagnostic_${SAMPLE_NAME}/${SAMPLE_NAME}_diagnostic_report.txt" ]; then
-            echo "Quick Summary:"
-            grep -E "(Mapping Percentage|Total Contigs|Contigs >1000bp)" "./diagnostic_${SAMPLE_NAME}/${SAMPLE_NAME}_diagnostic_report.txt" || true
-        fi
-    fi
+    echo "Diagnostic analysis completed successfully"
 else
     echo "Diagnostic analysis failed with exit code: $DIAGNOSTIC_EXIT_CODE"
 fi

@@ -22,6 +22,13 @@ R2=$2
 ACCESSION=$3
 SAMPLE_NAME=$4
 THREADS=${5:-4}
+EXTREME_MEMORY_FLAG=""
+
+# Check for extreme memory flag
+if [[ "$6" == "--extremely-large-files" ]] || [[ "$*" == *"--extremely-large-files"* ]]; then
+    EXTREME_MEMORY_FLAG="--extremely-large-files"
+    echo "EXTREME MEMORY MODE: Using high memory settings for large files"
+fi
 
 # Set up environment and paths
 echo "========================================="
@@ -235,12 +242,16 @@ fi
 
 eval "$(conda shell.bash hook)"
 conda activate viral_assembly
-megahit -1 "${R1_BASE}.qc.fastq.gz" \
-        -2 "${R2_BASE}.qc.fastq.gz" \
-        -o "assembly_${SAMPLE_NAME}" \
-        --presets meta-sensitive \
-        --min-contig-len 500 \
-        -t "$THREADS"
+# Build MEGAHIT command with conditional extreme memory settings
+MEGAHIT_CMD="megahit -1 \"${R1_BASE}.qc.fastq.gz\" -2 \"${R2_BASE}.qc.fastq.gz\" -o \"assembly_${SAMPLE_NAME}\" --presets meta-sensitive --min-contig-len 500 -t \"$THREADS\""
+
+if [ -n "$EXTREME_MEMORY_FLAG" ]; then
+    echo "Adding extreme memory settings for MEGAHIT..."
+    MEGAHIT_CMD="$MEGAHIT_CMD --memory 0.9"  # Use 90% of available memory
+fi
+
+echo "MEGAHIT command: $MEGAHIT_CMD"
+eval $MEGAHIT_CMD
 
 # Check if assembly succeeded
 if [ ! -f "assembly_${SAMPLE_NAME}/final.contigs.fa" ]; then
@@ -549,12 +560,19 @@ echo "GENERATING QC VISUALIZATION REPORT"
 echo "========================================="
 
 # Generate presentation-ready QC report
-QC_SCRIPT_PATH="$(dirname "$0")/qc_with_simple_plots.py"
+# Find the pipeline directory (where this script is located)
+PIPELINE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+QC_SCRIPT_PATH="${PIPELINE_DIR}/qc_with_simple_plots.py"
+
 if [ -f "$QC_SCRIPT_PATH" ]; then
     echo "Creating QC visualization report..."
+    # Run QC script from parent directory so it can find diagnostic_${SAMPLE_NAME}
+    cd ..
     python "$QC_SCRIPT_PATH" "diagnostic_${SAMPLE_NAME}"
+    QC_EXIT_CODE=$?
+    cd "diagnostic_${SAMPLE_NAME}"
     
-    if [ $? -eq 0 ]; then
+    if [ $QC_EXIT_CODE -eq 0 ]; then
         echo "✅ QC report generated: diagnostic_${SAMPLE_NAME}/diagnostic_${SAMPLE_NAME}_presentation_ready_report.html"
         echo "🌐 Open this file in a web browser for presentation-ready results"
     else
@@ -562,7 +580,7 @@ if [ -f "$QC_SCRIPT_PATH" ]; then
     fi
 else
     echo "⚠️  QC script not found at: $QC_SCRIPT_PATH"
-    echo "   Manual QC generation: python qc_with_simple_plots.py diagnostic_${SAMPLE_NAME}"
+    echo "   Manual QC generation: python ${PIPELINE_DIR}/qc_with_simple_plots.py diagnostic_${SAMPLE_NAME}"
 fi
 
 echo ""

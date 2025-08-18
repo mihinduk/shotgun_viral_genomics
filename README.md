@@ -4,6 +4,11 @@ A comprehensive pipeline for processing shotgun sequencing data from viral sampl
 
 ## Overview
 
+## Quick Start - Viral Diagnostic Module
+
+For contamination detection and quality assessment, see [DIAGNOSTIC_QUICKSTART.md](DIAGNOSTIC_QUICKSTART.md)
+
+
 This pipeline takes Illumina shotgun sequencing data and an accession number for a viral genome, then:
 1. Calculates basic statistics on input reads (seqkit stats)
 2. Cleans the input sequences (fastp)
